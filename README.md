@@ -1,13 +1,6 @@
-Вот полный файл `README.md` с подробным руководством пользователя, включая результаты проверки, настройки приложения и все остальные разделы:
-
-```markdown
 # Система проверки технической документации
 
-[![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![PyQt6](https://img.shields.io/badge/PyQt-6-green.svg)](https://www.riverbankcomputing.com/software/pyqt/)
-[![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
-
-**Версия 2.2.0**
+**Версия 2.1.5**
 
 <p align="center">
   <b>Автоматизированная система проверки технической документации на соответствие требованиям импортозамещения, функциональным стандартам и показателям назначения</b>
@@ -129,7 +122,6 @@
 ```bash
 git clone https://github.com/yourusername/doc-checker.git
 cd doc-checker
-```
 
 Или скачайте и распакуйте архив.
 
