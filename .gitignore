@@ -1,0 +1,31 @@
+# Python сборки
+build/
+dist/
+*.pyc
+*.pyz
+*.pkg
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Виртуальное окружение
+venv/
+env/
+.env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Логи и временные файлы
+*.log
+*.tmp
+*.temp
+__pycache__/
+*.py[cod]
+*.so
+.Python
