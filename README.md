@@ -1,5 +1,4 @@
 # Система проверки технической документации
-
 **Версия 2.1.5**
 
 <p align="center">
@@ -280,4 +279,575 @@ python main.py
 #### Фильтрация результатов
 
 - **Поиск в результатах** — текстовый поиск по всем колонкам
-- **Фильтр** — выбор по статусу (Все/Провалено
+- **Фильтр** — выбор по статусу (Все/Провалено/Пройдено/Требует проверки)
+- **Сортировка** — клик по заголовку колонки
+
+### Просмотр документа с ошибками
+
+1. Нажмите кнопку **"Просмотр документа"** в любой строке результата
+2. Или дважды кликните по строке в таблице
+3. Откроется окно просмотрщика с подсветкой проблемных мест
+
+**Возможности просмотрщика:**
+- Навигация по страницам (кнопки или колесо мыши)
+- Переход между ошибками (кнопки "◀ Пред." / "След. ▶")
+- Подсветка найденных фрагментов
+- Увеличение/уменьшение масштаба
+- Копирование текста
+
+### Анализ версий ПО
+
+Отдельный режим для проверки соответствия версий программного обеспечения:
+
+1. Нажмите кнопку **"Анализ версий"** на главной панели
+2. Выберите Excel-файл с реестром ПО
+3. Укажите лист и колонки с данными
+4. Нажмите **"Выполнить анализ"**
+
+**Результаты анализа:**
+- Соответствие/несоответствие версий
+- Статистика по категориям ПО
+- Детализация по госконтрактам
+- Экспорт отчета в Excel
+
+### Настройки приложения
+
+Меню **"Настройки"** → **"Параметры"**:
+
+#### Общие
+- Автоматическая загрузка последнего документа
+- Сохранение выбранных проверок
+- Язык интерфейса (русский/английский)
+
+#### Проверки
+- Порог нечеткого поиска (по умолчанию 80%)
+- Максимальное количество ошибок на проверку
+- Учитывать регистр (да/нет)
+- Игнорировать пробелы (да/нет)
+
+#### Интерфейс
+- Тема оформления (темная/светлая/смешанная)
+- Размер шрифта
+- Автоматическое раскрытие групп
+
+#### Экспорт
+- Формат по умолчанию (PDF/Excel/ODT/ODS)
+- Включать статистику
+- Включать полный текст документа
+
+---
+
+## 🔍 Типы проверок
+
+### Текстовые проверки
+
+#### `text_present` (Текст присутствует)
+Проверяет, что указанный текст обязательно присутствует в документе.
+
+```yaml
+- name: Наличие требования о безопасности
+  type: text_present
+  text: "обеспечение безопасности информации"
+```
+
+#### `text_not_present` (Текст отсутствует)
+Проверяет, что указанный текст НЕ должен присутствовать в документе.
+
+```yaml
+- name: Отсутствие устаревших терминов
+  type: text_not_present
+  text: "устаревший"
+```
+
+#### `multiple_texts_present` (Несколько текстов)
+Проверяет наличие всех указанных текстов.
+
+```yaml
+- name: Комплексное требование
+  type: multiple_texts_present
+  texts:
+    - "должен обеспечивать"
+    - "должен поддерживать"
+    - "должен иметь"
+  require_all: true  # true - все тексты, false - хотя бы один
+```
+
+### Нечеткий поиск
+
+#### `fuzzy_text_present`
+Ищет текст с учетом возможных опечаток и вариаций.
+
+```yaml
+- name: Поиск ГОСТ с опечатками
+  type: fuzzy_text_present
+  text: "ГОСТ 34.601-90"
+  threshold: 85  # порог сходства в процентах
+```
+
+**Параметры:**
+- `text` — искомый текст
+- `threshold` — порог сходства (0-100). Чем выше, тем точнее совпадение.
+
+### Проверка версий
+
+#### `version_check` (Проверка версий)
+Проверяет соответствие версий ПО заданным требованиям.
+
+```yaml
+- name: Версия Python
+  type: version_check
+  version: "3.8"
+  operator: ">="
+  text: "Python"
+  version_pattern: "\\d+\\.\\d+"  # регулярное выражение для поиска версии
+```
+
+**Операторы:**
+- `>=` — версия должна быть не ниже указанной
+- `<=` — версия должна быть не выше указанной
+- `>` — версия должна быть строго выше
+- `<` — версия должна быть строго ниже
+- `==` — версия должна точно соответствовать
+- `!=` — версия не должна соответствовать
+
+### Комбинированные проверки
+
+#### `combined_check` (Комбинированная проверка)
+Объединяет несколько проверок с логическими операторами.
+
+```yaml
+- name: Комплексная проверка импортозамещения
+  type: combined_check
+  operator: AND  # или OR
+  checks:
+    - type: text_not_present
+      text: "Oracle"
+    - type: text_not_present
+      text: "VMWare"
+    - type: text_present
+      text: "PostgreSQL"
+```
+
+### Проверки в таблицах
+
+#### `table_check` (Проверка в таблицах)
+Ищет текст только внутри таблиц документа.
+
+```yaml
+- name: Проверка таблицы требований
+  type: table_check
+  text: "Обязательное требование"
+  search_in_table: true
+```
+
+#### `after_table_check` (После таблицы)
+Ищет текст в абзацах, следующих сразу за таблицами.
+
+```yaml
+- name: Описание после таблицы
+  type: after_table_check
+  text: "Примечание:"
+  paragraphs_after: 3  # количество абзацев после таблицы для проверки
+```
+
+---
+
+## ⚙️ Формат конфигурации
+
+### Базовая структура
+
+Конфигурация хранится в YAML-файле. Полная структура:
+
+```yaml
+# Метаданные
+metadata:
+  name: "Конфигурация для проверки ТЗ"
+  version: "2.0"
+  description: "Набор проверок для технических заданий"
+  created: "2024-01-15"
+  author: "Иванов И.И."
+
+# Глобальные настройки
+settings:
+  default_threshold: 80  # порог для нечеткого поиска по умолчанию
+  case_sensitive: false  # учет регистра по умолчанию
+  max_results: 1000       # максимальное количество результатов
+
+# Группы проверок
+groups:
+  - name: Импортозамещение
+    description: "Проверки на соответствие политике импортозамещения"
+    checks:
+      - name: Отсутствие Oracle
+        type: text_not_present
+        text: "Oracle"
+        critical: true  # критическая проверка
+
+      - name: Отсутствие Microsoft SQL
+        type: text_not_present
+        texts:
+          - "Microsoft SQL"
+          - "MS SQL"
+          - "MSSQL"
+        require_all: false
+        case_sensitive: false
+
+  - name: Функциональные требования
+    description: "Проверка основных функциональных требований"
+    checks:
+      - name: Режим работы
+        type: text_present
+        text: "круглосуточный режим работы"
+        case_sensitive: false
+
+      - name: Версия ОС
+        type: version_check
+        text: "ОС"
+        version: "7.5"
+        operator: ">="
+        version_pattern: "\\d+\\.\\d+"
+        threshold: 80
+```
+
+### Примеры конфигураций
+
+#### Минимальная конфигурация
+```yaml
+groups:
+  - name: Основные проверки
+    checks:
+      - name: Проверка 1
+        type: text_present
+        text: "Обязательный текст"
+```
+
+#### Конфигурация для импортозамещения
+```yaml
+metadata:
+  name: "Импортозамещение 2024"
+  version: "1.0"
+
+groups:
+  - name: Запрещенное ПО
+    checks:
+      - name: Oracle
+        type: text_not_present
+        texts: ["Oracle", "MySQL", "Java"]
+        require_all: false
+
+      - name: Microsoft
+        type: fuzzy_text_not_present
+        text: "Microsoft"
+        threshold: 85
+
+  - name: Разрешенное ПО
+    checks:
+      - name: PostgreSQL
+        type: text_present
+        text: "PostgreSQL"
+        
+      - name: Linux
+        type: text_present
+        text: "Linux"
+        case_sensitive: false
+```
+
+---
+
+## 📁 Структура проекта
+
+```
+doc-checker/
+│
+├── 📄 main.py                 # Точка входа в приложение
+├── 📄 requirements.txt        # Зависимости Python
+├── 📄 config.yaml             # Основной файл конфигурации
+├── 📄 README.md               # Документация
+├── 📄 LICENSE                 # Лицензия
+│
+├── 📁 src/                    # Исходный код
+│   ├── 📄 __init__.py
+│   ├── 📄 document_checker.py # Основной класс проверки
+│   ├── 📄 document_loader.py  # Загрузка документов
+│   ├── 📄 fuzzy_checker.py    # Нечеткий поиск
+│   ├── 📄 version_checker.py  # Проверка версий
+│   ├── 📄 table_checker.py    # Проверка таблиц
+│   ├── 📄 config_manager.py   # Управление конфигурацией
+│   └── 📄 logger_config.py    # Настройка логирования
+│
+├── 📁 gui/                     # Графический интерфейс
+│   ├── 📄 __init__.py
+│   ├── 📄 main_window.py       # Главное окно
+│   ├── 📄 result_table.py      # Таблица результатов
+│   ├── 📄 document_viewer.py   # Просмотр документа
+│   ├── 📄 version_analysis.py  # Анализ версий
+│   ├── 📄 check_manager.py     # Управление проверками
+│   └── 📄 settings_dialog.py   # Диалог настроек
+│
+├── 📁 utils/                   # Вспомогательные утилиты
+│   ├── 📄 __init__.py
+│   ├── 📄 text_utils.py        # Обработка текста
+│   ├── 📄 excel_utils.py       # Работа с Excel
+│   ├── 📄 export_utils.py      # Экспорт результатов
+│   └── 📄 pdf_generator.py     # Генерация PDF
+│
+├── 📁 resources/                # Ресурсы
+│   ├── 📁 styles/              # Стили интерфейса
+│   │   ├── 📄 dark_style.qss
+│   │   ├── 📄 light_style.qss
+│   │   └── 📄 mixed_style.qss
+│   ├── 📁 icons/               # Иконки
+│   └── 📁 examples/            # Примеры документов
+│
+├── 📁 tests/                    # Тесты
+│   ├── 📄 __init__.py
+│   ├── 📄 test_checker.py
+│   └── 📄 test_loader.py
+│
+└── 📁 logs/                     # Логи приложения
+    └── 📄 app.log
+```
+
+---
+
+## 💻 Разработка
+
+### Добавление новых проверок
+
+#### 1. Создайте класс проверки
+
+Создайте новый файл в `src/`, например `new_checker.py`:
+
+```python
+# src/new_checker.py
+from typing import Dict, Any, List, Tuple
+
+class NewChecker:
+    """Новый тип проверки"""
+    
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Инициализация проверки
+        :param config: Конфигурация проверки из YAML
+        """
+        self.name = config.get('name', 'Новая проверка')
+        self.type = config.get('type', 'new_check')
+        self.params = config.get('params', {})
+        
+    def check(self, document_text: str, pages: List[str]) -> Tuple[bool, float, str, int, str]:
+        """
+        Выполнение проверки
+        
+        :param document_text: Полный текст документа
+        :param pages: Список страниц документа
+        :return: (успех, оценка, детали, страница, позиция)
+        """
+        # Ваша логика проверки
+        success = True
+        score = 100.0
+        details = "Проверка выполнена успешно"
+        page = 1
+        position = "Начало документа"
+        
+        # ... реализация ...
+        
+        return success, score, details, page, position
+```
+
+#### 2. Зарегистрируйте проверку
+
+Откройте `src/document_checker.py` и добавьте:
+
+```python
+# src/document_checker.py
+from src.new_checker import NewChecker
+
+class DocumentChecker:
+    # ...
+    
+    def _execute_check(self, check_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Выполнение отдельной проверки"""
+        check_type = check_config.get('type', '')
+        
+        # Добавьте новый тип проверки
+        if check_type == 'text_present':
+            # ... существующая логика ...
+        elif check_type == 'new_check':
+            checker = NewChecker(check_config)
+            result = checker.check(self.full_text, self.pages)
+        # ...
+```
+
+#### 3. Добавьте в GUI
+
+Обновите `gui/check_manager.py`, чтобы новый тип отображался в интерфейсе:
+
+```python
+# gui/check_manager.py
+
+# Добавьте в список доступных типов
+CHECK_TYPES = {
+    # ... существующие типы ...
+    'new_check': 'Новая проверка',
+}
+
+# Добавьте параметры для нового типа в форму создания
+def get_params_for_type(check_type):
+    params = []
+    if check_type == 'new_check':
+        params = [
+            {'name': 'param1', 'type': 'string', 'label': 'Параметр 1'},
+            {'name': 'param2', 'type': 'number', 'label': 'Параметр 2'},
+        ]
+    # ...
+    return params
+```
+
+### Сборка
+
+#### Сборка в исполняемый файл (EXE)
+
+Для создания standalone-приложения используйте PyInstaller:
+
+1. Установите PyInstaller:
+```bash
+pip install pyinstaller
+```
+
+2. Создайте файл спецификации `build.spec`:
+
+```python
+# build.spec
+# -*- mode: python ; coding: utf-8 -*-
+
+a = Analysis(
+    ['main.py'],
+    pathex=[],
+    binaries=[],
+    datas=[
+        ('config.yaml', '.'),
+        ('resources/**/*', 'resources'),
+    ],
+    hiddenimports=[
+        'PyQt6.sip',
+        'rapidfuzz',
+        'yaml',
+        'pandas',
+        'openpyxl',
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.datas,
+    [],
+    name='DocChecker',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,  # False - без консоли, True - с консолью
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon='resources/icons/app.ico'  # Путь к иконке
+)
+```
+
+3. Запустите сборку:
+```bash
+pyinstaller build.spec
+```
+
+4. Готовый исполняемый файл будет в папке `dist/DocChecker.exe`
+
+#### Сборка для Linux/macOS
+
+```bash
+# Linux
+pyinstaller --onefile --windowed --icon=resources/icons/app.ico main.py
+
+# macOS
+pyinstaller --onefile --windowed --icon=resources/icons/app.icns main.py
+```
+
+---
+
+## 📄 Лицензия
+
+Этот проект распространяется под лицензией MIT. Подробности в файле [LICENSE](LICENSE).
+
+```
+MIT License
+
+Copyright (c) 2024 Федеральное казначейство
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## 📞 Контакты
+
+По всем вопросам обращайтесь:
+
+- **Разработчик:** Иванов Иван Иванович
+- **Должность:** Ведущий разработчик
+- **Email:** ivanov@roskazna.ru
+- **Телефон:** +7 (495) 123-45-67
+- **Отдел:** Управление информационных технологий
+
+### Поддержка
+
+- 📧 **Техническая поддержка:** support@roskazna.ru
+- 📋 **Система отслеживания ошибок:** https://jira.roskazna.ru
+- 📚 **Документация:** https://wiki.roskazna.ru/doc-checker
+
+### Вклад в проект
+
+Мы приветствуем вклад в развитие проекта! Пожалуйста:
+
+1. Форкните репозиторий
+2. Создайте ветку для ваших изменений (`git checkout -b feature/amazing-feature`)
+3. Зафиксируйте изменения (`git commit -m 'Add some amazing feature'`)
+4. Отправьте изменения в ваш форк (`git push origin feature/amazing-feature`)
+5. Откройте Pull Request
+
+---
+
+<p align="center">
+  <b>Сделано с ❤️ для Федерального казначейства</b><br>
+  <i>Автоматизация контроля качества документации</i>
+</p>
+```
+
+Этот файл содержит полное, структурированное и профессиональное описание вашего проекта, готовое для размещения на GitHub или в любой другой системе контроля версий.
