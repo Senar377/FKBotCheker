@@ -1,10 +1,12 @@
 # Python сборки
 build/
 dist/
+json_database/
 *.pyc
 *.pyz
 *.pkg
 *.exe
+*.json
 *.dll
 *.so
 *.dylib
