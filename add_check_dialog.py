@@ -1,4 +1,4 @@
-# add_check_dialog.py - ИСПРАВЛЕННЫЙ КОД С ПРОКРУТКОЙ И ЕДИНОЙ ЦВЕТОВОЙ СХЕМОЙ
+# add_check_dialog.py
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QLineEdit, QComboBox,
     QTextEdit, QDialogButtonBox, QPushButton, QFormLayout,
@@ -9,7 +9,6 @@ from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QColor, QFont, QPalette
 import re
 
-
 class AddCheckDialog(QDialog):
     """Диалог для добавления новой проверки"""
 
@@ -18,10 +17,9 @@ class AddCheckDialog(QDialog):
         self.edit_data = edit_data
         self.is_edit_mode = edit_data is not None
         self.deleted = False
-        self.version_sections_widgets = []  # Список виджетов секций версий
-        self.combined_sections_widgets = []  # Список виджетов условий комбинированных проверок
+        self.version_sections_widgets = []
+        self.combined_sections_widgets = []
 
-        # Словарь для хранения виджетов и их меток
         self.field_widgets = {}
         self.label_widgets = {}
 
@@ -33,14 +31,11 @@ class AddCheckDialog(QDialog):
         self.resize(900, 700)
         self.setMinimumSize(800, 600)
 
-        # Установка единой цветовой схемы
         self.setup_theme()
-
         self.init_ui()
 
     def setup_theme(self):
         """Настройка единой цветовой схемы"""
-        # Темная тема для лучшего контраста
         dark_theme = """
             QDialog {
                 background-color: #2c3e50;
@@ -182,13 +177,11 @@ class AddCheckDialog(QDialog):
         self.setStyleSheet(dark_theme)
 
     def init_ui(self):
-        # Основной контейнер с прокруткой
         main_scroll = QScrollArea()
         main_scroll.setWidgetResizable(True)
         main_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         main_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-        # Основной виджет для содержимого
         content_widget = QWidget()
         content_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -196,7 +189,6 @@ class AddCheckDialog(QDialog):
         main_layout.setContentsMargins(15, 15, 15, 15)
         main_layout.setSpacing(15)
 
-        # Заголовок
         title_label = QLabel("Добавление новой проверки" if not self.is_edit_mode else "Редактирование проверки")
         title_label.setStyleSheet("""
             font-size: 18px; 
@@ -209,54 +201,36 @@ class AddCheckDialog(QDialog):
         """)
         main_layout.addWidget(title_label)
 
-        # Форма с полями
         form_widget = QWidget()
         form_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
         form_layout = QVBoxLayout(form_widget)
         form_layout.setSpacing(12)
         form_layout.setContentsMargins(10, 10, 10, 10)
 
-        # === ОСНОВНЫЕ ПОЛЯ ===
         self.create_basic_fields(form_layout)
-
-        # === УСЛОВНО ВИДИМЫЕ ПОЛЯ ===
         self.create_conditional_fields(form_layout)
-
-        # === СЕКЦИИ ВЕРСИЙ ===
         self.create_version_sections(form_layout)
-
-        # === СЕКЦИИ КОМБИНИРОВАННЫХ ПРОВЕРОК ===
         self.create_combined_sections(form_layout)
-
-        # === ОПИСАНИЕ ===
         self.create_description_field(form_layout)
 
         main_layout.addWidget(form_widget)
 
-        # Подсказка
         self.create_hint_label(main_layout)
-
-        # Кнопки
         self.create_buttons(main_layout)
 
-        # Устанавливаем виджет в скролл
         main_scroll.setWidget(content_widget)
 
-        # Основной layout диалога
         dialog_layout = QVBoxLayout(self)
         dialog_layout.setContentsMargins(0, 0, 0, 0)
         dialog_layout.addWidget(main_scroll)
 
-        # Заполняем данные если режим редактирования
         if self.is_edit_mode:
             self.fill_form_data()
 
-        # Обновляем видимость полей
         self.on_type_changed(self.type_combo.currentText())
 
     def create_basic_fields(self, form_layout):
         """Создание основных полей формы"""
-        # Название проверки
         name_layout = QHBoxLayout()
         name_label = QLabel("Название проверки:")
         name_label.setMinimumWidth(200)
@@ -269,7 +243,6 @@ class AddCheckDialog(QDialog):
         self.field_widgets['name'] = self.name_input
         self.label_widgets['name'] = name_label
 
-        # Группа проверок
         group_layout = QHBoxLayout()
         group_label = QLabel("Группа проверок:")
         group_label.setMinimumWidth(200)
@@ -293,7 +266,6 @@ class AddCheckDialog(QDialog):
         self.field_widgets['group'] = self.group_input
         self.label_widgets['group'] = group_label
 
-        # Тип проверки
         type_layout = QHBoxLayout()
         type_label = QLabel("Тип проверки:")
         type_label.setMinimumWidth(200)
@@ -319,7 +291,6 @@ class AddCheckDialog(QDialog):
 
     def create_conditional_fields(self, form_layout):
         """Создание условно видимых полей"""
-        # Основной текст для поиска
         self.text_container = QWidget()
         text_layout = QHBoxLayout(self.text_container)
         text_layout.setContentsMargins(0, 0, 0, 0)
@@ -336,7 +307,6 @@ class AddCheckDialog(QDialog):
         self.field_widgets['text'] = self.text_input
         self.label_widgets['text'] = self.text_label
 
-        # Алиасы
         self.aliases_container = QWidget()
         aliases_layout = QHBoxLayout(self.aliases_container)
         aliases_layout.setContentsMargins(0, 0, 0, 0)
@@ -354,7 +324,6 @@ class AddCheckDialog(QDialog):
         self.field_widgets['aliases'] = self.aliases_input
         self.label_widgets['aliases'] = self.aliases_label
 
-        # Исключающие алиасы
         self.without_container = QWidget()
         without_layout = QHBoxLayout(self.without_container)
         without_layout.setContentsMargins(0, 0, 0, 0)
@@ -372,7 +341,6 @@ class AddCheckDialog(QDialog):
         self.field_widgets['without_aliases'] = self.without_aliases_input
         self.label_widgets['without_aliases'] = self.without_label
 
-        # Пороги для нечеткого поиска
         self.thresholds_container = QWidget()
         thresholds_layout = QHBoxLayout(self.thresholds_container)
         thresholds_layout.setContentsMargins(0, 0, 0, 0)
@@ -411,7 +379,6 @@ class AddCheckDialog(QDialog):
         version_layout = QVBoxLayout(self.version_sections_group)
         version_layout.setSpacing(10)
 
-        # Информация о типе проверки
         version_info_label = QLabel("""
         <div style='color: #bdc3c7; font-size: 12px; padding: 5px;'>
         Проверка версий ПО и оборудования с поддержкой различных операторов сравнения.
@@ -421,13 +388,11 @@ class AddCheckDialog(QDialog):
         version_info_label.setWordWrap(True)
         version_layout.addWidget(version_info_label)
 
-        # Кнопка добавления секции
         self.add_section_btn = QPushButton("+ Добавить показатель")
         self.add_section_btn.clicked.connect(self.add_version_section)
         self.add_section_btn.setVisible(False)
         version_layout.addWidget(self.add_section_btn)
 
-        # Контейнер для секций с прокруткой
         self.sections_scroll = QScrollArea()
         self.sections_scroll.setWidgetResizable(True)
         self.sections_scroll.setMinimumHeight(200)
@@ -437,12 +402,10 @@ class AddCheckDialog(QDialog):
         self.sections_scroll.setWidget(self.sections_container)
         version_layout.addWidget(self.sections_scroll)
 
-        # Настройки проверки
         settings_widget = QWidget()
         settings_layout = QVBoxLayout(settings_widget)
         settings_layout.setSpacing(8)
 
-        # Режим проверки
         mode_layout = QHBoxLayout()
         self.strict_mode_check = QCheckBox("Строгий режим (все показатели должны быть выполнены)")
         self.strict_mode_check.setChecked(True)
@@ -451,7 +414,6 @@ class AddCheckDialog(QDialog):
         mode_layout.addStretch()
         settings_layout.addLayout(mode_layout)
 
-        # Требуемое количество
         required_layout = QHBoxLayout()
         required_label = QLabel("Требуется показателей:")
         self.required_total_spin = QSpinBox()
@@ -476,7 +438,6 @@ class AddCheckDialog(QDialog):
         combined_layout = QVBoxLayout(self.combined_sections_group)
         combined_layout.setSpacing(10)
 
-        # Информация о типе проверки
         combined_info_label = QLabel("""
         <div style='color: #bdc3c7; font-size: 12px; padding: 5px;'>
         Объединение нескольких условий с логическими операторами И/ИЛИ. 
@@ -486,13 +447,11 @@ class AddCheckDialog(QDialog):
         combined_info_label.setWordWrap(True)
         combined_layout.addWidget(combined_info_label)
 
-        # Кнопка добавления условия
         self.add_combined_section_btn = QPushButton("+ Добавить условие")
         self.add_combined_section_btn.clicked.connect(self.add_combined_section)
         self.add_combined_section_btn.setVisible(False)
         combined_layout.addWidget(self.add_combined_section_btn)
 
-        # Контейнер для условий с прокруткой
         self.combined_sections_scroll = QScrollArea()
         self.combined_sections_scroll.setWidgetResizable(True)
         self.combined_sections_scroll.setMinimumHeight(200)
@@ -502,12 +461,10 @@ class AddCheckDialog(QDialog):
         self.combined_sections_scroll.setWidget(self.combined_sections_container)
         combined_layout.addWidget(self.combined_sections_scroll)
 
-        # Настройки логических операторов
         logic_widget = QWidget()
         logic_layout = QVBoxLayout(logic_widget)
         logic_layout.setSpacing(8)
 
-        # Логический оператор
         operator_layout = QHBoxLayout()
         operator_label = QLabel("Логический оператор:")
         self.logic_operator_combo = QComboBox()
@@ -519,7 +476,6 @@ class AddCheckDialog(QDialog):
         operator_layout.addStretch()
         logic_layout.addLayout(operator_layout)
 
-        # Требуемое количество
         required_combined_layout = QHBoxLayout()
         required_combined_label = QLabel("Требуется выполнить условий (для ИЛИ):")
         self.required_passed_spin = QSpinBox()
@@ -590,7 +546,6 @@ class AddCheckDialog(QDialog):
         """Обновляет видимость полей в зависимости от типа проверки"""
         type_code = type_text.split(" - ")[0] if " - " in type_text else type_text
 
-        # Определяем какие поля нужны для каждого типа
         needs_text = type_code in ['fuzzy_text_present', 'no_fuzzy_text_present',
                                    'fuzzy_text_present_after_any_table']
         needs_aliases = type_code in ['no_text_present', 'text_present',
@@ -601,13 +556,11 @@ class AddCheckDialog(QDialog):
         needs_version_sections = type_code == 'version_comparison'
         needs_combined_sections = type_code == 'combined_check'
 
-        # Устанавливаем видимость контейнеров полей
         self.text_container.setVisible(needs_text)
         self.aliases_container.setVisible(needs_aliases)
         self.without_container.setVisible(needs_without)
         self.thresholds_container.setVisible(needs_thresholds)
 
-        # Секции версий (показатели назначения)
         self.version_sections_group.setVisible(needs_version_sections)
         if hasattr(self, 'add_section_btn'):
             self.add_section_btn.setVisible(needs_version_sections)
@@ -616,7 +569,6 @@ class AddCheckDialog(QDialog):
         if hasattr(self, 'strict_mode_check'):
             self.strict_mode_check.setVisible(needs_version_sections)
 
-        # Секции комбинированных проверок
         self.combined_sections_group.setVisible(needs_combined_sections)
         if hasattr(self, 'add_combined_section_btn'):
             self.add_combined_section_btn.setVisible(needs_combined_sections)
@@ -625,11 +577,9 @@ class AddCheckDialog(QDialog):
         if hasattr(self, 'required_passed_spin'):
             self.required_passed_spin.setVisible(needs_combined_sections)
 
-        # Если это проверка версий и нет секций - добавляем одну по умолчанию
         if needs_version_sections and not self.version_sections_widgets:
             self.add_version_section()
 
-        # Если это комбинированная проверка и нет секций - добавляем одно условие по умолчанию
         if needs_combined_sections and not self.combined_sections_widgets:
             self.add_combined_section()
 
@@ -716,11 +666,9 @@ class AddCheckDialog(QDialog):
         section_layout = QVBoxLayout(section_widget)
         section_layout.setSpacing(10)
 
-        # Верхняя строка: название, версия и оператор
         top_layout = QHBoxLayout()
         top_layout.setSpacing(10)
 
-        # Название показателя
         name_label = QLabel("Название:")
         name_label.setFixedWidth(70)
         name_input = QLineEdit()
@@ -729,7 +677,6 @@ class AddCheckDialog(QDialog):
         if section_data:
             name_input.setText(section_data.get('name', ''))
 
-        # Требуемая версия
         version_label = QLabel("Версия:")
         version_label.setFixedWidth(50)
         version_input = QLineEdit()
@@ -738,14 +685,11 @@ class AddCheckDialog(QDialog):
         if section_data:
             version_input.setText(section_data.get('required_version', ''))
 
-        # Оператор сравнения
         operator_label = QLabel("Оператор:")
         operator_label.setFixedWidth(70)
         operator_combo = QComboBox()
         operator_combo.setMaximumWidth(100)
-        operator_combo.addItems([
-            ">=", "<=", ">", "<", "=", "!="
-        ])
+        operator_combo.addItems([">=", "<=", ">", "<", "=", "!="])
         operator = section_data.get('operator', '>=') if section_data else '>='
         index = operator_combo.findText(operator)
         if index >= 0:
@@ -759,7 +703,6 @@ class AddCheckDialog(QDialog):
         top_layout.addWidget(operator_combo)
         top_layout.addStretch()
 
-        # Кнопка удаления
         delete_btn = QPushButton("Удалить")
         delete_btn.setObjectName("delete_button")
         delete_btn.setMaximumWidth(100)
@@ -767,7 +710,6 @@ class AddCheckDialog(QDialog):
 
         section_layout.addLayout(top_layout)
 
-        # Паттерны поиска
         patterns_label = QLabel("Регулярные выражения для поиска версий (по одному на строку):")
         patterns_label.setStyleSheet("color: #ecf0f1; font-weight: bold; margin-top: 5px;")
         patterns_input = QTextEdit()
@@ -780,16 +722,13 @@ class AddCheckDialog(QDialog):
         section_layout.addWidget(patterns_label)
         section_layout.addWidget(patterns_input)
 
-        # Сохраняем ссылки на виджеты
         section_widget.name_input = name_input
         section_widget.version_input = version_input
         section_widget.operator_combo = operator_combo
         section_widget.patterns_input = patterns_input
 
-        # Обработчик удаления
         delete_btn.clicked.connect(lambda: self.remove_version_section(section_widget))
 
-        # Добавляем в контейнер
         self.sections_container_layout.addWidget(section_widget)
         self.version_sections_widgets.append(section_widget)
 
@@ -886,11 +825,9 @@ class AddCheckDialog(QDialog):
         section_layout = QVBoxLayout(section_widget)
         section_layout.setSpacing(10)
 
-        # Верхняя строка: тип условия и название
         top_layout = QHBoxLayout()
         top_layout.setSpacing(10)
 
-        # Тип условия
         type_label = QLabel("Тип условия:")
         type_label.setFixedWidth(90)
         type_combo = QComboBox()
@@ -909,7 +846,6 @@ class AddCheckDialog(QDialog):
                     type_combo.setCurrentIndex(i)
                     break
 
-        # Название условия
         name_label = QLabel("Название:")
         name_label.setFixedWidth(60)
         name_input = QLineEdit()
@@ -924,7 +860,6 @@ class AddCheckDialog(QDialog):
         top_layout.addWidget(name_input)
         top_layout.addStretch()
 
-        # Кнопка удаления
         delete_btn = QPushButton("Удалить")
         delete_btn.setObjectName("delete_button")
         delete_btn.setMaximumWidth(100)
@@ -932,12 +867,10 @@ class AddCheckDialog(QDialog):
 
         section_layout.addLayout(top_layout)
 
-        # Контейнер для полей условий
         condition_fields_widget = QWidget()
         condition_layout = QVBoxLayout(condition_fields_widget)
         condition_layout.setSpacing(8)
 
-        # Поля ввода
         aliases_label = QLabel("Алиасы (через запятую):")
         aliases_label.setStyleSheet("font-weight: bold;")
         aliases_input = QTextEdit()
@@ -956,7 +889,6 @@ class AddCheckDialog(QDialog):
         without_input.setMaximumHeight(60)
         without_input.setPlaceholderText("Текст, который НЕ должен присутствовать")
 
-        # Контейнер для порогов
         thresholds_container = QWidget()
         thresholds_layout = QHBoxLayout(thresholds_container)
         thresholds_layout.setContentsMargins(0, 0, 0, 0)
@@ -976,7 +908,6 @@ class AddCheckDialog(QDialog):
         thresholds_layout.addWidget(trust_threshold_input)
         thresholds_layout.addStretch()
 
-        # Заполняем данные если есть
         if section_data:
             if 'aliases' in section_data:
                 aliases_input.setPlainText(', '.join(section_data['aliases']))
@@ -999,7 +930,6 @@ class AddCheckDialog(QDialog):
 
         section_layout.addWidget(condition_fields_widget)
 
-        # Обработчик изменения типа условия
         def on_type_changed_in_section(type_text):
             type_code = type_text.split(" - ")[0] if " - " in type_text else type_text
 
@@ -1007,21 +937,18 @@ class AddCheckDialog(QDialog):
             needs_without = type_code == 'text_present_without'
             needs_thresholds = type_code in ['fuzzy_text_present', 'no_fuzzy_text_present']
 
-            # Показываем/скрываем соответствующие поля
             text_label.setVisible(needs_text)
             text_input.setVisible(needs_text)
             without_label.setVisible(needs_without)
             without_input.setVisible(needs_without)
             thresholds_container.setVisible(needs_thresholds)
 
-            # Показываем/скрываем поле алиасов
             aliases_label.setVisible(not needs_text)
             aliases_input.setVisible(not needs_text)
 
         type_combo.currentTextChanged.connect(on_type_changed_in_section)
         on_type_changed_in_section(type_combo.currentText())
 
-        # Сохраняем ссылки на виджеты
         section_widget.type_combo = type_combo
         section_widget.name_input = name_input
         section_widget.aliases_input = aliases_input
@@ -1031,10 +958,8 @@ class AddCheckDialog(QDialog):
         section_widget.trust_threshold_input = trust_threshold_input
         section_widget.on_type_changed = on_type_changed_in_section
 
-        # Обработчик удаления
         delete_btn.clicked.connect(lambda: self.remove_combined_section(section_widget))
 
-        # Добавляем в контейнер
         self.combined_sections_container_layout.addWidget(section_widget)
         self.combined_sections_widgets.append(section_widget)
 
@@ -1053,38 +978,30 @@ class AddCheckDialog(QDialog):
         if not self.edit_data:
             return
 
-        # Базовые поля
         self.name_input.setText(self.edit_data.get('name', ''))
 
-        # Группа (если есть, добавляем в комбобокс)
         group = self.edit_data.get('group', '')
         if group and self.group_input.findText(group) == -1:
             self.group_input.addItem(group)
         self.group_input.setCurrentText(group)
 
-        # Тип проверки
         check_type = self.edit_data.get('type', '')
         for i in range(self.type_combo.count()):
             if self.type_combo.itemText(i).startswith(check_type):
                 self.type_combo.setCurrentIndex(i)
                 break
 
-        # Текст
         self.text_input.setPlainText(self.edit_data.get('text', ''))
 
-        # Алиасы
         aliases = self.edit_data.get('aliases', [])
         self.aliases_input.setPlainText(', '.join(aliases))
 
-        # Исключающие алиасы
         without_aliases = self.edit_data.get('without_aliases', [])
         self.without_aliases_input.setPlainText(', '.join(without_aliases))
 
-        # Пороги
         self.threshold_input.setText(str(self.edit_data.get('threshold', '70')))
         self.trust_threshold_input.setText(str(self.edit_data.get('trust_threshold', '85')))
 
-        # Заполняем секции версий если тип подходящий
         if check_type == 'version_comparison':
             version_sections = self.edit_data.get('version_sections', [])
             for section in version_sections:
@@ -1093,7 +1010,6 @@ class AddCheckDialog(QDialog):
             self.required_total_spin.setValue(self.edit_data.get('required_total_indicators', 3))
             self.strict_mode_check.setChecked(self.edit_data.get('strict_mode', True))
 
-        # Заполняем условия комбинированной проверки если тип подходящий
         elif check_type == 'combined_check':
             conditions = self.edit_data.get('conditions', [])
             for condition in conditions:
@@ -1104,12 +1020,10 @@ class AddCheckDialog(QDialog):
             self.logic_operator_combo.setCurrentText(operator_text)
             self.required_passed_spin.setValue(self.edit_data.get('required_passed', 1))
 
-        # Описание
         self.description_input.setPlainText(self.edit_data.get('description', ''))
 
     def validate_and_accept(self):
         """Проверяет данные и принимает форму"""
-        # Получаем данные
         name = self.name_input.text().strip()
         group = self.group_input.currentText().strip()
         type_full = self.type_combo.currentText()
@@ -1123,7 +1037,6 @@ class AddCheckDialog(QDialog):
             QMessageBox.warning(self, "Ошибка", "Введите или выберите группу")
             return
 
-        # Валидация в зависимости от типа
         if check_type in ['fuzzy_text_present', 'no_fuzzy_text_present',
                           'fuzzy_text_present_after_any_table']:
             text = self.text_input.toPlainText().strip()
@@ -1132,7 +1045,6 @@ class AddCheckDialog(QDialog):
                                     f"Для типа '{check_type}' необходимо указать текст для поиска")
                 return
 
-            # Проверяем пороги
             try:
                 threshold = float(self.threshold_input.text())
                 trust_threshold = float(self.trust_threshold_input.text())
@@ -1145,13 +1057,11 @@ class AddCheckDialog(QDialog):
                 return
 
         elif check_type == 'version_comparison':
-            # Проверяем, что есть хотя бы одна секция
             if not self.version_sections_widgets:
                 QMessageBox.warning(self, "Ошибка",
                                     "Для типа 'version_comparison' необходимо добавить хотя бы один показатель версии")
                 return
 
-            # Проверяем каждую секцию
             for section_widget in self.version_sections_widgets:
                 section_name = section_widget.name_input.text().strip()
                 version = section_widget.version_input.text().strip()
@@ -1172,7 +1082,6 @@ class AddCheckDialog(QDialog):
                                         f"Не указаны паттерны поиска в показателе '{section_name}'")
                     return
 
-                # Проверяем валидность паттернов
                 pattern_lines = [p.strip() for p in patterns.split('\n') if p.strip()]
                 for pattern in pattern_lines:
                     try:
@@ -1183,13 +1092,11 @@ class AddCheckDialog(QDialog):
                         return
 
         elif check_type == 'combined_check':
-            # Проверяем, что есть хотя бы одно условие
             if not self.combined_sections_widgets:
                 QMessageBox.warning(self, "Ошибка",
                                     "Для комбинированной проверки необходимо добавить хотя бы одно условие")
                 return
 
-            # Проверяем каждое условие
             for section_widget in self.combined_sections_widgets:
                 section_name = section_widget.name_input.text().strip()
                 type_full = section_widget.type_combo.currentText()
@@ -1200,7 +1107,6 @@ class AddCheckDialog(QDialog):
                                         "Не указано название условия")
                     return
 
-                # Вызываем обработчик изменения типа для обновления видимости полей
                 if hasattr(section_widget, 'on_type_changed'):
                     section_widget.on_type_changed(type_full)
 
@@ -1211,7 +1117,6 @@ class AddCheckDialog(QDialog):
                                             f"Для типа '{section_type}' необходимо указать текст для поиска")
                         return
 
-                    # Проверяем пороги
                     try:
                         threshold = float(section_widget.threshold_input.text())
                         trust_threshold = float(section_widget.trust_threshold_input.text())
@@ -1252,7 +1157,6 @@ class AddCheckDialog(QDialog):
             'group': group
         }
 
-        # Добавляем поля в зависимости от типа
         if check_type in ['fuzzy_text_present', 'no_fuzzy_text_present',
                           'fuzzy_text_present_after_any_table']:
             check_data['text'] = self.text_input.toPlainText().strip()
@@ -1260,7 +1164,6 @@ class AddCheckDialog(QDialog):
             check_data['trust_threshold'] = float(self.trust_threshold_input.text())
 
         elif check_type == 'version_comparison':
-            # Собираем секции версий
             version_sections = []
             for section_widget in self.version_sections_widgets:
                 section_data = {
@@ -1278,7 +1181,6 @@ class AddCheckDialog(QDialog):
             check_data['strict_mode'] = self.strict_mode_check.isChecked()
 
         elif check_type == 'combined_check':
-            # Собираем условия комбинированной проверки
             combined_conditions = []
             for section_widget in self.combined_sections_widgets:
                 type_full = section_widget.type_combo.currentText()
@@ -1289,7 +1191,6 @@ class AddCheckDialog(QDialog):
                     'type': condition_type
                 }
 
-                # Добавляем поля в зависимости от типа
                 if condition_type in ['fuzzy_text_present', 'no_fuzzy_text_present']:
                     condition_data['text'] = section_widget.text_input.toPlainText().strip()
                     condition_data['threshold'] = float(section_widget.threshold_input.text())
@@ -1318,13 +1219,11 @@ class AddCheckDialog(QDialog):
                 aliases = [alias.strip() for alias in aliases_text.split(',') if alias.strip()]
                 check_data['aliases'] = aliases
 
-        # Исключающие алиасы
         without_text = self.without_aliases_input.toPlainText().strip()
         if without_text and check_type == 'text_present_without':
             without_aliases = [alias.strip() for alias in without_text.split(',') if alias.strip()]
             check_data['without_aliases'] = without_aliases
 
-        # Описание
         description = self.description_input.toPlainText().strip()
         if description:
             check_data['description'] = description
