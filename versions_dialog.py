@@ -1,9 +1,8 @@
 # versions_dialog.py
 """
 Диалог для отображения и редактирования версий ПО из документа
-С интеграцией с JSON базой данных
+С интеграцией с JSON базой данных и нечетким поиском
 """
-
 
 import logging
 import re
@@ -11,6 +10,7 @@ import json
 import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
+from difflib import SequenceMatcher
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
@@ -18,9 +18,10 @@ from PyQt6.QtWidgets import (
     QComboBox, QMessageBox, QGroupBox, QTextEdit, QSplitter,
     QMenu, QApplication, QWidget, QFileDialog, QTabWidget,
     QInputDialog, QDialogButtonBox, QFormLayout, QCheckBox,
-    QGridLayout, QFrame, QToolTip, QSpinBox, QDateEdit, QGridLayout
+    QGridLayout, QFrame, QToolTip, QSpinBox, QDateEdit,
+    QProgressBar
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSettings, QDate
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSettings, QDate, QThread
 from PyQt6.QtGui import QFont, QColor, QAction, QTextCursor, QTextCharFormat, QIcon
 
 # Импортируем наши модули
@@ -28,6 +29,160 @@ from excel_parser import ExcelParser
 from json_database import JSONDatabase, JSONDatabaseError
 
 logger = logging.getLogger(__name__)
+
+
+class FuzzySearchThread(QThread):
+    """Поток для выполнения нечеткого поиска наименований ПО из БД в тексте документа"""
+
+    progress = pyqtSignal(int)
+    result_ready = pyqtSignal(list)
+    finished = pyqtSignal()
+
+    def __init__(self, document_text, db_products, threshold=0.8):
+        super().__init__()
+        self.document_text = document_text
+        self.db_products = db_products
+        self.threshold = threshold
+        self.lines = document_text.split('\n') if document_text else []
+
+    def run(self):
+        results = []
+        total = len(self.db_products)
+
+        # Предобработка текста - разбиваем на строки и слова
+        lines_with_words = []
+        for line_num, line in enumerate(self.lines, 1):
+            words = re.findall(r'\b\w+\b', line.lower())
+            lines_with_words.append({
+                'num': line_num,
+                'text': line,
+                'words': words,
+                'words_set': set(words)
+            })
+
+        for i, product in enumerate(self.db_products):
+            if i % 10 == 0:
+                self.progress.emit(int(i * 100 / total))
+
+            name = product.get('name', '')
+            if not name:
+                continue
+
+            # Ищем продукт в тексте
+            match_info = self.fuzzy_search_in_text(name, lines_with_words)
+
+            result = {
+                'product': product,
+                'found': match_info is not None,
+                'match_info': match_info,
+                'similarity': match_info[0] if match_info else 0,
+                'line_number': match_info[1] if match_info else None,
+                'context': match_info[2] if match_info else None,
+                'match_type': match_info[3] if match_info else None
+            }
+            results.append(result)
+
+        self.progress.emit(100)
+        self.result_ready.emit(results)
+        self.finished.emit()
+
+    def fuzzy_search_in_text(self, product_name, lines_with_words):
+        """
+        Нечеткий поиск названия продукта в тексте с порогом 80%
+        """
+        if not product_name or not lines_with_words:
+            return None
+
+        product_lower = product_name.lower()
+        best_match = None
+        best_ratio = 0
+
+        # Разбиваем название на слова (игнорируем короткие слова)
+        product_words = [w for w in re.findall(r'\b\w+\b', product_lower) if len(w) > 2]
+
+        if not product_words:
+            return None
+
+        for line_data in lines_with_words:
+            line_num = line_data['num']
+            line_text = line_data['text']
+            line_words = line_data['words']
+            line_words_set = line_data['words_set']
+
+            # 1. Сначала проверяем точное вхождение всей строки
+            if product_lower in line_text.lower():
+                ratio = 1.0
+                context = self.get_context(line_num)
+                return (ratio, line_num, context, 'exact')
+
+            # 2. Проверяем вхождение всех слов продукта
+            words_found = 0
+            for word in product_words:
+                if word in line_words_set:
+                    words_found += 1
+
+            if words_found == len(product_words):
+                ratio = 1.0
+                context = self.get_context(line_num)
+                return (ratio, line_num, context, 'all_words')
+
+            # 3. Проверяем вхождение большинства слов (больше 80%)
+            if words_found > 0:
+                word_ratio = words_found / len(product_words)
+                if word_ratio >= 0.8 and word_ratio > best_ratio:
+                    best_ratio = word_ratio
+                    best_match = (word_ratio, line_num, self.get_context(line_num), 'most_words')
+
+            # 4. Нечеткое сравнение для каждого слова
+            for word in line_words:
+                if len(word) > 3 and len(word) < 30:
+                    # Сравниваем слово с названием продукта
+                    ratio = SequenceMatcher(None, product_lower, word).ratio()
+                    if ratio >= self.threshold and ratio > best_ratio:
+                        best_ratio = ratio
+                        best_match = (ratio, line_num, self.get_context(line_num), 'fuzzy_word')
+
+                    # Сравниваем слово с каждым словом продукта
+                    for p_word in product_words:
+                        if len(p_word) > 3:
+                            word_ratio = SequenceMatcher(None, p_word, word).ratio()
+                            if word_ratio >= self.threshold and word_ratio > best_ratio:
+                                best_ratio = word_ratio
+                                best_match = (word_ratio, line_num, self.get_context(line_num), 'fuzzy')
+
+            # 5. Проверяем, содержит ли строка значительную часть слов продукта
+            if len(line_words) > 0:
+                # Считаем количество совпадающих слов с учетом нечеткого сравнения
+                fuzzy_matches = 0
+                for p_word in product_words:
+                    for line_word in line_words:
+                        if len(line_word) > 3:
+                            if SequenceMatcher(None, p_word, line_word).ratio() >= 0.8:
+                                fuzzy_matches += 1
+                                break
+
+                if fuzzy_matches > 0:
+                    fuzzy_ratio = fuzzy_matches / len(product_words)
+                    if fuzzy_ratio >= 0.8 and fuzzy_ratio > best_ratio:
+                        best_ratio = fuzzy_ratio
+                        best_match = (fuzzy_ratio, line_num, self.get_context(line_num), 'fuzzy_multiple')
+
+        return best_match
+
+    def get_context(self, line_num, context_lines=1):
+        """Получение контекста вокруг строки"""
+        start = max(0, line_num - context_lines - 1)
+        end = min(len(self.lines), line_num + context_lines)
+
+        context = []
+        for i in range(start, end):
+            if i == line_num - 1:
+                prefix = "→ "
+            else:
+                prefix = "  "
+            context.append(f"{prefix}{self.lines[i][:150]}")
+
+        return '\n'.join(context)
 
 
 class VersionCleaner:
@@ -622,6 +777,7 @@ class VersionsDialog(QDialog):
         self.versions_data = []
         self.table_versions = []
         self.comparison_results = []
+        self.fuzzy_search_results = []
         self.software_patterns = self.get_software_patterns()
         self.category_keywords = self.build_category_keywords()
         self.settings = QSettings("ФедеральноеКазначейство", "Settings")
@@ -710,9 +866,17 @@ class VersionsDialog(QDialog):
         self.tab_widget.addTab(self.comparison_tab, "🔍 Сравнение с БД")
 
         # Вкладка 3: Управление базой данных
-        self.database_tab = QWidget()  # <-- СОЗДАЕМ АТРИБУТ
-        self.init_database_tab()  # <-- ИНИЦИАЛИЗИРУЕМ
+        self.database_tab = QWidget()
+        self.init_database_tab()
         self.tab_widget.addTab(self.database_tab, "💾 База данных")
+
+        # Вкладка 4: СПО/БПО (нечеткий поиск) - создаем, но не добавляем
+        self.fuzzy_tab = QWidget()
+        self.init_fuzzy_tab()
+        self.fuzzy_tab_index = -1  # Индекс вкладки, -1 означает что не добавлена
+
+        # Применяем начальную видимость вкладки
+        self.update_fuzzy_tab_visibility()
 
         main_layout.addWidget(self.tab_widget)
 
@@ -741,6 +905,149 @@ class VersionsDialog(QDialog):
         main_layout.addLayout(btn_layout)
 
         self.setLayout(main_layout)
+
+    def init_fuzzy_tab(self):
+        """Инициализация вкладки нечеткого поиска СПО/БПО с порогом 80%"""
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        # Верхняя панель с информацией
+        info_panel = QGroupBox("Информация о поиске")
+        info_layout = QHBoxLayout()
+
+        self.fuzzy_stats_label = QLabel("📊 Всего продуктов в БД: 0 | Найдено: 0 | Не найдено: 0")
+        self.fuzzy_stats_label.setStyleSheet("font-weight: bold; color: #2c3e50;")
+
+        info_layout.addWidget(self.fuzzy_stats_label)
+        info_layout.addStretch()
+
+        info_panel.setLayout(info_layout)
+        layout.addWidget(info_panel)
+
+        # Панель управления
+        control_panel = QGroupBox("Параметры поиска (порог схожести фиксирован 80%)")
+        control_layout = QHBoxLayout()
+
+        # Кнопка запуска поиска
+        self.fuzzy_search_btn = QPushButton("🔍 Найти СПО/БПО в документе")
+        self.fuzzy_search_btn.clicked.connect(self.start_fuzzy_search)
+        self.fuzzy_search_btn.setMinimumHeight(40)
+        self.fuzzy_search_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                font-weight: bold;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #229954;
+            }
+            QPushButton:disabled {
+                background-color: #95a5a6;
+            }
+        """)
+
+        # Прогресс бар
+        self.fuzzy_progress = QProgressBar()
+        self.fuzzy_progress.setVisible(False)
+
+        # Фильтры
+        control_layout.addWidget(QLabel("Подсистема:"))
+        self.fuzzy_subsystem_filter = QComboBox()
+        self.fuzzy_subsystem_filter.addItem("Все подсистемы")
+        self.fuzzy_subsystem_filter.currentTextChanged.connect(self.filter_fuzzy_table)
+        control_layout.addWidget(self.fuzzy_subsystem_filter)
+
+        control_layout.addWidget(QLabel("Статус:"))
+        self.fuzzy_status_filter = QComboBox()
+        self.fuzzy_status_filter.addItems(["Все", "✅ Найдено", "❌ Не найдено"])
+        self.fuzzy_status_filter.currentTextChanged.connect(self.filter_fuzzy_table)
+        control_layout.addWidget(self.fuzzy_status_filter)
+
+        control_layout.addWidget(QLabel("Тип совпадения:"))
+        self.fuzzy_match_filter = QComboBox()
+        self.fuzzy_match_filter.addItems(["Все", "Точное", "Все слова", "Большинство слов", "Нечеткое"])
+        self.fuzzy_match_filter.currentTextChanged.connect(self.filter_fuzzy_table)
+        control_layout.addWidget(self.fuzzy_match_filter)
+
+        control_layout.addStretch()
+
+        control_panel.setLayout(control_layout)
+        layout.addWidget(control_panel)
+
+        # Панель поиска
+        search_panel = QWidget()
+        search_layout = QHBoxLayout()
+        search_layout.setContentsMargins(0, 0, 0, 0)
+
+        search_layout.addWidget(QLabel("🔍 Фильтр по названию:"))
+        self.fuzzy_search_input = QLineEdit()
+        self.fuzzy_search_input.setPlaceholderText("Введите часть названия для фильтрации...")
+        self.fuzzy_search_input.textChanged.connect(self.filter_fuzzy_table)
+        search_layout.addWidget(self.fuzzy_search_input)
+
+        search_layout.addWidget(QLabel("Мин. схожесть:"))
+        self.fuzzy_min_similarity = QComboBox()
+        self.fuzzy_min_similarity.addItems(["80%", "85%", "90%", "95%", "100%"])
+        self.fuzzy_min_similarity.setCurrentText("80%")
+        self.fuzzy_min_similarity.currentTextChanged.connect(self.filter_fuzzy_table)
+        search_layout.addWidget(self.fuzzy_min_similarity)
+
+        search_panel.setLayout(search_layout)
+        layout.addWidget(search_panel)
+
+        layout.addWidget(self.fuzzy_search_btn)
+        layout.addWidget(self.fuzzy_progress)
+
+        # Таблица результатов
+        self.fuzzy_table = QTableWidget()
+        self.fuzzy_table.setColumnCount(11)
+        self.fuzzy_table.setHorizontalHeaderLabels([
+            "✅", "Наименование ПО (из БД)", "Версия", "Подсистема",
+            "ГК", "Схожесть", "Строка", "Тип совпадения",
+            "Контекст", "ID", "Действия"
+        ])
+
+        # Настройка размеров
+        header = self.fuzzy_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+
+        self.fuzzy_table.setColumnWidth(0, 30)  # ✅
+        self.fuzzy_table.setColumnWidth(1, 350)  # Наименование ПО
+        self.fuzzy_table.setColumnWidth(2, 100)  # Версия
+        self.fuzzy_table.setColumnWidth(3, 120)  # Подсистема
+        self.fuzzy_table.setColumnWidth(4, 150)  # ГК
+        self.fuzzy_table.setColumnWidth(5, 80)  # Схожесть
+        self.fuzzy_table.setColumnWidth(6, 60)  # Строка
+        self.fuzzy_table.setColumnWidth(7, 120)  # Тип совпадения
+        self.fuzzy_table.setColumnWidth(8, 300)  # Контекст
+        self.fuzzy_table.setColumnWidth(9, 50)  # ID
+        self.fuzzy_table.setColumnWidth(10, 100)  # Действия
+
+        self.fuzzy_table.setAlternatingRowColors(True)
+        self.fuzzy_table.setSortingEnabled(True)
+        self.fuzzy_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+
+        layout.addWidget(self.fuzzy_table)
+
+        # Кнопки экспорта
+        export_layout = QHBoxLayout()
+
+        export_csv_btn = QPushButton("📊 Экспорт в CSV")
+        export_csv_btn.clicked.connect(self.export_fuzzy_to_csv)
+
+        export_report_btn = QPushButton("📄 Сформировать отчет")
+        export_report_btn.clicked.connect(self.generate_fuzzy_report)
+
+        export_layout.addWidget(export_csv_btn)
+        export_layout.addWidget(export_report_btn)
+        export_layout.addStretch()
+
+        layout.addLayout(export_layout)
+
+        self.fuzzy_tab.setLayout(layout)
 
     def init_database_tab(self):
         """Инициализация вкладки управления базой данных"""
@@ -2093,6 +2400,8 @@ class VersionsDialog(QDialog):
         self.load_database_table()
         self.update_db_stats()
         self.refresh_backups_list()
+        # Обновляем фильтр подсистем на вкладке нечеткого поиска
+        self.update_fuzzy_subsystem_filter()
 
     def refresh_backups_list(self):
         """Обновление списка резервных копий"""
@@ -2449,3 +2758,533 @@ class VersionsDialog(QDialog):
     def get_software_patterns(self):
         """Получение паттернов для поиска ПО"""
         return {}
+
+    # === Методы для вкладки нечеткого поиска ===
+
+    def start_fuzzy_search(self):
+        """Запуск нечеткого поиска с порогом 80%"""
+        db_products = self.json_db.get_all_products()
+
+        if not db_products:
+            QMessageBox.warning(self, "Ошибка", "Нет данных в базе данных для поиска")
+            return
+
+        # Блокируем кнопку
+        self.fuzzy_search_btn.setEnabled(False)
+        self.fuzzy_search_btn.setText("⏳ Поиск...")
+
+        # Показываем прогресс
+        self.fuzzy_progress.setVisible(True)
+        self.fuzzy_progress.setValue(0)
+
+        # Запускаем поток с фиксированным порогом 80%
+        self.fuzzy_thread = FuzzySearchThread(
+            self.document_text,
+            db_products,
+            0.8  # фиксированный порог 80%
+        )
+        self.fuzzy_thread.progress.connect(self.fuzzy_progress.setValue)
+        self.fuzzy_thread.result_ready.connect(self.display_fuzzy_results)
+        self.fuzzy_thread.finished.connect(self.on_fuzzy_search_finished)
+        self.fuzzy_thread.start()
+
+    def on_fuzzy_search_finished(self):
+        """Обработка завершения поиска"""
+        self.fuzzy_search_btn.setEnabled(True)
+        self.fuzzy_search_btn.setText("🔍 Найти СПО/БПО в документе")
+        self.fuzzy_progress.setVisible(False)
+
+    def display_fuzzy_results(self, results):
+        """Отображение результатов нечеткого поиска"""
+        self.fuzzy_search_results = results
+        self.fuzzy_table.setRowCount(len(results))
+
+        found_count = 0
+
+        for i, result in enumerate(results):
+            product = result['product']
+            found = result['found']
+            match_info = result.get('match_info')
+
+            # Статус
+            status_item = QTableWidgetItem("✅" if found else "❌")
+            status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if found:
+                status_item.setForeground(QColor(0, 150, 0))
+                found_count += 1
+            else:
+                status_item.setForeground(QColor(255, 0, 0))
+            self.fuzzy_table.setItem(i, 0, status_item)
+
+            # Наименование ПО
+            self.fuzzy_table.setItem(i, 1, QTableWidgetItem(product['name']))
+
+            # Версия
+            self.fuzzy_table.setItem(i, 2, QTableWidgetItem(product.get('version', '')))
+
+            # Подсистема (из базы данных)
+            subsystem_item = QTableWidgetItem(product.get('subsystem', 'Не определена'))
+            if product.get('subsystem') != 'Не определена':
+                subsystem_item.setForeground(QColor(0, 100, 200))
+            self.fuzzy_table.setItem(i, 3, subsystem_item)
+
+            # ГК
+            gk_text = ', '.join(product.get('gk', []))
+            gk_item = QTableWidgetItem(gk_text)
+            if gk_text:
+                gk_item.setForeground(QColor(200, 100, 0))
+            self.fuzzy_table.setItem(i, 4, gk_item)
+
+            # Схожесть
+            if found and match_info:
+                similarity = int(match_info[0] * 100)
+                similarity_item = QTableWidgetItem(f"{similarity}%")
+                if similarity >= 95:
+                    similarity_item.setForeground(QColor(0, 150, 0))
+                elif similarity >= 80:
+                    similarity_item.setForeground(QColor(255, 140, 0))
+                else:
+                    similarity_item.setForeground(QColor(255, 0, 0))
+                self.fuzzy_table.setItem(i, 5, similarity_item)
+            else:
+                self.fuzzy_table.setItem(i, 5, QTableWidgetItem("—"))
+
+            # Строка
+            if found and match_info:
+                self.fuzzy_table.setItem(i, 6, QTableWidgetItem(str(match_info[1])))
+            else:
+                self.fuzzy_table.setItem(i, 6, QTableWidgetItem("—"))
+
+            # Тип совпадения
+            type_display = {
+                'exact': 'Точное',
+                'all_words': 'Все слова',
+                'most_words': 'Большинство слов',
+                'fuzzy_word': 'Нечеткое (слово)',
+                'fuzzy': 'Нечеткое',
+                'fuzzy_multiple': 'Нечеткое (несколько)'
+            }
+
+            if found and match_info and len(match_info) > 3:
+                match_type = match_info[3]
+                type_text = type_display.get(match_type, match_type)
+                type_item = QTableWidgetItem(type_text)
+
+                if match_type == 'exact' or match_type == 'all_words':
+                    type_item.setForeground(QColor(0, 150, 0))
+                elif match_type == 'most_words':
+                    type_item.setForeground(QColor(0, 100, 200))
+                else:
+                    type_item.setForeground(QColor(255, 140, 0))
+
+                self.fuzzy_table.setItem(i, 7, type_item)
+            else:
+                self.fuzzy_table.setItem(i, 7, QTableWidgetItem("—"))
+
+            # Контекст
+            if found and match_info and len(match_info) > 2:
+                context_item = QTableWidgetItem(match_info[2])
+                self.fuzzy_table.setItem(i, 8, context_item)
+            else:
+                self.fuzzy_table.setItem(i, 8, QTableWidgetItem(""))
+
+            # ID
+            id_item = QTableWidgetItem(str(product.get('id', '')))
+            id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.fuzzy_table.setItem(i, 9, id_item)
+
+            # Кнопки действий
+            actions_widget = QWidget()
+            actions_layout = QHBoxLayout()
+            actions_layout.setContentsMargins(2, 2, 2, 2)
+            actions_layout.setSpacing(2)
+
+            edit_btn = QPushButton("✏️")
+            edit_btn.setMaximumWidth(30)
+            edit_btn.setProperty('row', i)
+            edit_btn.clicked.connect(lambda checked, r=i: self.edit_fuzzy_product(r))
+
+            goto_btn = QPushButton("🔍")
+            goto_btn.setMaximumWidth(30)
+            goto_btn.setProperty('row', i)
+            goto_btn.clicked.connect(lambda checked, r=i: self.goto_fuzzy_location(r))
+
+            actions_layout.addWidget(edit_btn)
+            actions_layout.addWidget(goto_btn)
+
+            actions_widget.setLayout(actions_layout)
+            self.fuzzy_table.setCellWidget(i, 10, actions_widget)
+
+        self.fuzzy_table.resizeRowsToContents()
+
+        # Обновляем статистику
+        total = len(results)
+        not_found = total - found_count
+        self.fuzzy_stats_label.setText(
+            f"📊 Всего продуктов в БД: {total} | "
+            f"✅ Найдено в документе: {found_count} | "
+            f"❌ Не найдено: {not_found}"
+        )
+
+        # Обновляем фильтры
+        self.update_fuzzy_subsystem_filter()
+
+    def update_fuzzy_subsystem_filter(self):
+        """Обновление фильтра подсистем на вкладке нечеткого поиска"""
+        current_text = self.fuzzy_subsystem_filter.currentText()
+        self.fuzzy_subsystem_filter.clear()
+        self.fuzzy_subsystem_filter.addItem("Все подсистемы")
+
+        subsystems = set()
+        for result in self.fuzzy_search_results:
+            subs = result['product'].get('subsystem', 'Не определена')
+            subsystems.add(subs)
+
+        for subs in sorted(subsystems):
+            self.fuzzy_subsystem_filter.addItem(subs)
+
+        # Восстанавливаем выбранное значение
+        index = self.fuzzy_subsystem_filter.findText(current_text)
+        if index >= 0:
+            self.fuzzy_subsystem_filter.setCurrentIndex(index)
+
+    def filter_fuzzy_table(self):
+        """Фильтрация таблицы нечеткого поиска"""
+        search_text = self.fuzzy_search_input.text().lower()
+        subsystem = self.fuzzy_subsystem_filter.currentText()
+        status = self.fuzzy_status_filter.currentText()
+        match_type = self.fuzzy_match_filter.currentText()
+
+        # Получаем минимальный процент схожести
+        min_sim_text = self.fuzzy_min_similarity.currentText().replace('%', '')
+        min_similarity = int(min_sim_text) if min_sim_text else 80
+
+        for row in range(self.fuzzy_table.rowCount()):
+            show_row = True
+
+            # Фильтр по названию
+            if search_text:
+                product_item = self.fuzzy_table.item(row, 1)
+                if product_item and search_text not in product_item.text().lower():
+                    show_row = False
+
+            # Фильтр по подсистеме
+            if show_row and subsystem != "Все подсистемы":
+                subs_item = self.fuzzy_table.item(row, 3)
+                if subs_item and subs_item.text() != subsystem:
+                    show_row = False
+
+            # Фильтр по статусу
+            if show_row and status != "Все":
+                status_item = self.fuzzy_table.item(row, 0)
+                if status_item:
+                    if status == "✅ Найдено" and status_item.text() != "✅":
+                        show_row = False
+                    elif status == "❌ Не найдено" and status_item.text() != "❌":
+                        show_row = False
+
+            # Фильтр по типу совпадения
+            if show_row and match_type != "Все":
+                type_item = self.fuzzy_table.item(row, 7)
+                if type_item:
+                    type_text = type_item.text()
+                    if match_type == "Точное" and type_text not in ["Точное", "Все слова"]:
+                        show_row = False
+                    elif match_type == "Все слова" and type_text != "Все слова":
+                        show_row = False
+                    elif match_type == "Большинство слов" and type_text != "Большинство слов":
+                        show_row = False
+                    elif match_type == "Нечеткое" and "Нечеткое" not in type_text:
+                        show_row = False
+
+            # Фильтр по минимальной схожести
+            if show_row and min_similarity > 0:
+                sim_item = self.fuzzy_table.item(row, 5)
+                if sim_item and sim_item.text() != "—":
+                    sim_value = int(sim_item.text().replace('%', ''))
+                    if sim_value < min_similarity:
+                        show_row = False
+
+            self.fuzzy_table.setRowHidden(row, not show_row)
+
+    def edit_fuzzy_product(self, row):
+        """Редактирование продукта из результатов нечеткого поиска"""
+        if row >= len(self.fuzzy_search_results):
+            return
+
+        result = self.fuzzy_search_results[row]
+        product = result['product']
+
+        # Открываем диалог редактирования
+        subsystems = self.json_db.get_subsystems()
+        dialog = ProductEditDialog(self, product, subsystems)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            updated_product = dialog.get_data()
+            if updated_product:
+                # Обновляем в БД
+                if self.json_db.update_product(product['id'], updated_product):
+                    QMessageBox.information(
+                        self, "Успешно",
+                        f"Продукт обновлен"
+                    )
+                    # Обновляем результаты поиска
+                    self.fuzzy_search_results[row]['product'] = updated_product
+                    self.display_fuzzy_results(self.fuzzy_search_results)
+                    self.refresh_database_tab()
+                else:
+                    QMessageBox.warning(
+                        self, "Ошибка",
+                        "Не удалось обновить продукт"
+                    )
+
+    def goto_fuzzy_location(self, row):
+        """Переход к месту в документе, где найдено совпадение"""
+        if row >= len(self.fuzzy_search_results):
+            return
+
+        result = self.fuzzy_search_results[row]
+        if not result['found']:
+            QMessageBox.information(self, "Информация", "Продукт не найден в документе")
+            return
+
+        match_info = result.get('match_info')
+        if not match_info or len(match_info) < 2:
+            return
+
+        line_num = match_info[1]
+
+        # Переключаемся на вкладку с документом
+        self.tab_widget.setCurrentIndex(0)  # Вкладка документа
+
+        # Ищем строку в таблице документа
+        for doc_row in range(self.doc_table.rowCount()):
+            line_item = self.doc_table.item(doc_row, 5)  # Колонка "Строка"
+            if line_item and line_item.text() == str(line_num):
+                self.doc_table.selectRow(doc_row)
+                self.doc_table.scrollToItem(line_item)
+
+                # Подсвечиваем строку
+                for col in range(self.doc_table.columnCount()):
+                    item = self.doc_table.item(doc_row, col)
+                    if item:
+                        item.setBackground(QColor(255, 255, 0, 100))
+
+                # Сбрасываем подсветку через 2 секунды
+                QTimer.singleShot(2000, lambda: self.clear_row_highlight(doc_row))
+                break
+
+    def clear_row_highlight(self, row):
+        """Сброс подсветки строки"""
+        for col in range(self.doc_table.columnCount()):
+            item = self.doc_table.item(row, col)
+            if item:
+                item.setBackground(QColor(255, 255, 255))
+
+    def export_fuzzy_to_csv(self):
+        """Экспорт результатов нечеткого поиска в CSV"""
+        if not self.fuzzy_search_results:
+            QMessageBox.warning(self, "Ошибка", "Нет данных для экспорта")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить как CSV", f"fuzzy_search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            "CSV files (*.csv)"
+        )
+
+        if file_path:
+            try:
+                import csv
+                with open(file_path, 'w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        "Статус", "Наименование ПО", "Версия", "Подсистема", "ГК",
+                        "Схожесть", "Строка", "Тип совпадения", "Контекст", "ID"
+                    ])
+
+                    for result in self.fuzzy_search_results:
+                        product = result['product']
+                        found = result['found']
+                        match_info = result.get('match_info')
+
+                        type_display = {
+                            'exact': 'Точное',
+                            'all_words': 'Все слова',
+                            'most_words': 'Большинство слов',
+                            'fuzzy_word': 'Нечеткое (слово)',
+                            'fuzzy': 'Нечеткое',
+                            'fuzzy_multiple': 'Нечеткое (несколько)'
+                        }
+
+                        row_data = [
+                            "Найдено" if found else "Не найдено",
+                            product['name'],
+                            product.get('version', ''),
+                            product.get('subsystem', 'Не определена'),
+                            ', '.join(product.get('gk', []))
+                        ]
+
+                        if found and match_info:
+                            similarity = int(match_info[0] * 100)
+                            match_type = match_info[3] if len(match_info) > 3 else 'unknown'
+                            type_text = type_display.get(match_type, match_type)
+
+                            row_data.extend([
+                                f"{similarity}%",
+                                str(match_info[1]),
+                                type_text,
+                                match_info[2] if len(match_info) > 2 else '',
+                                str(product.get('id', ''))
+                            ])
+                        else:
+                            row_data.extend(['—', '—', '—', '', str(product.get('id', ''))])
+
+                        writer.writerow(row_data)
+
+                QMessageBox.information(self, "Успех", f"Данные экспортированы в {file_path}")
+            except Exception as e:
+                QMessageBox.warning(self, "Ошибка", f"Не удалось экспортировать: {str(e)}")
+
+    def generate_fuzzy_report(self):
+        """Генерация отчета по результатам нечеткого поиска"""
+        if not self.fuzzy_search_results:
+            QMessageBox.warning(self, "Ошибка", "Нет данных для формирования отчета")
+            return
+
+        total = len(self.fuzzy_search_results)
+        found = sum(1 for r in self.fuzzy_search_results if r['found'])
+        not_found = total - found
+
+        # Группировка по подсистемам
+        by_subsystem = {}
+        for result in self.fuzzy_search_results:
+            subs = result['product'].get('subsystem', 'Не определена')
+            if subs not in by_subsystem:
+                by_subsystem[subs] = {'total': 0, 'found': 0, 'names': []}
+            by_subsystem[subs]['total'] += 1
+            if result['found']:
+                by_subsystem[subs]['found'] += 1
+            else:
+                by_subsystem[subs]['names'].append(result['product']['name'])
+
+        # Группировка по типу совпадений
+        match_types = {}
+        for result in self.fuzzy_search_results:
+            if result['found']:
+                match_info = result.get('match_info')
+                if match_info and len(match_info) > 3:
+                    match_type = match_info[3]
+                    match_types[match_type] = match_types.get(match_type, 0) + 1
+
+        type_display = {
+            'exact': 'Точные совпадения',
+            'all_words': 'Все слова',
+            'most_words': 'Большинство слов',
+            'fuzzy_word': 'Нечеткие (по слову)',
+            'fuzzy': 'Нечеткие',
+            'fuzzy_multiple': 'Нечеткие (несколько слов)'
+        }
+
+        # Формируем отчет
+        report = f"""
+        <h1>Отчет по результатам нечеткого поиска СПО/БПО</h1>
+        <p><b>Дата:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}</p>
+        <p><b>Порог схожести:</b> 80% (фиксированный)</p>
+
+        <h2>Общая статистика</h2>
+        <ul>
+            <li>Всего продуктов в БД: <b>{total}</b></li>
+            <li><b style='color:green'>Найдено в документе: {found}</b></li>
+            <li><b style='color:red'>Не найдено: {not_found}</b></li>
+            <li>Процент покрытия: <b>{found / total * 100:.1f}%</b></li>
+        </ul>
+
+        <h2>Типы совпадений</h2>
+        <ul>
+        """
+
+        for match_type, count in match_types.items():
+            display_name = type_display.get(match_type, match_type)
+            report += f"<li><b>{display_name}:</b> {count}</li>"
+
+        report += "</ul>"
+
+        report += """
+        <h2>Статистика по подсистемам</h2>
+        <table border='1' cellpadding='5' style='border-collapse: collapse;'>
+            <tr>
+                <th>Подсистема</th>
+                <th>Всего</th>
+                <th>Найдено</th>
+                <th>Процент</th>
+            </tr>
+        """
+
+        for subs, stats in sorted(by_subsystem.items()):
+            percent = stats['found'] / stats['total'] * 100 if stats['total'] > 0 else 0
+            report += f"""
+            <tr>
+                <td>{subs}</td>
+                <td>{stats['total']}</td>
+                <td>{stats['found']}</td>
+                <td>{percent:.1f}%</td>
+            </tr>
+            """
+
+        report += "</table>"
+
+        # Детальный список не найденных продуктов по подсистемам
+        report += "<h2>Не найденные продукты по подсистемам</h2>"
+
+        for subs, stats in sorted(by_subsystem.items()):
+            if stats['names']:
+                report += f"<h3>{subs}</h3><ul>"
+                for name in sorted(stats['names'])[:20]:  # Ограничиваем до 20 на подсистему
+                    report += f"<li>{name}</li>"
+                if len(stats['names']) > 20:
+                    report += f"<li>... и еще {len(stats['names']) - 20} продуктов</li>"
+                report += "</ul>"
+
+        # Показываем отчет
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Отчет по нечеткому поиску (порог 80%)")
+        msg.setText(report)
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setMinimumWidth(800)
+        msg.setMinimumHeight(600)
+        msg.exec()
+
+    # ============= НОВЫЙ МЕТОД ДЛЯ ОБНОВЛЕНИЯ ВИДИМОСТИ ВКЛАДКИ =============
+    def update_fuzzy_tab_visibility(self):
+        """Обновление видимости вкладки нечеткого поиска на основе настроек"""
+        settings = QSettings("ФедеральноеКазначейство", "Settings")
+        show_fuzzy_tab = settings.value("show_fuzzy_tab", False, type=bool)
+
+        # Находим текущий индекс вкладки нечеткого поиска
+        current_index = -1
+        for i in range(self.tab_widget.count()):
+            if "СПО/БПО" in self.tab_widget.tabText(i):
+                current_index = i
+                break
+
+        # Если вкладка должна быть показана, но её нет - добавляем
+        if show_fuzzy_tab and current_index == -1:
+            # Добавляем вкладку перед вкладкой базы данных
+            self.tab_widget.insertTab(
+                self.tab_widget.count() - 1,  # перед последней вкладкой
+                self.fuzzy_tab,
+                "🎯 СПО/БПО (нечеткий поиск 80%)"
+            )
+            print("Вкладка нечеткого поиска добавлена")  # Для отладки
+
+        # Если вкладка не должна быть показана, но она есть - удаляем
+        elif not show_fuzzy_tab and current_index != -1:
+            self.tab_widget.removeTab(current_index)
+            print("Вкладка нечеткого поиска удалена")  # Для отладки
+
+    # ============= ОПЦИОНАЛЬНО: МЕТОД ДЛЯ ОБРАБОТКИ СОБЫТИЯ ПОКАЗА =============
+    def showEvent(self, event):
+        """Обработчик события показа диалога"""
+        super().showEvent(event)
+        # Обновляем видимость вкладки при каждом показе диалога
+        self.update_fuzzy_tab_visibility()

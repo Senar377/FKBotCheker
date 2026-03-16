@@ -1597,6 +1597,127 @@ class JSONDatabase:
         """Получение статистики"""
         return self.stats.copy()
 
+    def find_products(self,
+                      subsystem: Optional[str] = None,
+                      search: Optional[str] = None,
+                      with_certificate: Optional[bool] = None,
+                      gk_number: Optional[str] = None,
+                      include_inactive: bool = False) -> List[Dict]:
+        """
+        Поиск продуктов с фильтрацией
+
+        Args:
+            subsystem: фильтр по подсистеме
+            search: поиск по названию и описанию
+            with_certificate: фильтр по наличию сертификата
+            gk_number: фильтр по номеру ГК
+            include_inactive: включать неактивные
+
+        Returns:
+            List[Dict]: отфильтрованный список продуктов
+        """
+        results = []
+
+        for product in self.products:
+            if not include_inactive and not product.get('is_active', True):
+                continue
+
+            # Фильтр по подсистеме
+            if subsystem and subsystem != 'Все подсистемы' and subsystem != 'Все':
+                if product.get('subsystem') != subsystem:
+                    continue
+
+            # Поиск по тексту
+            if search:
+                search_lower = search.lower()
+                name = product.get('name', '').lower()
+                description = product.get('description', '').lower() if product.get('description') else ''
+
+                if search_lower not in name and search_lower not in description:
+                    continue
+
+            # Фильтр по сертификату
+            if with_certificate is not None:
+                has_cert = bool(product.get('certificate'))
+                if with_certificate and not has_cert:
+                    continue
+                if not with_certificate and has_cert:
+                    continue
+
+            # Фильтр по ГК
+            if gk_number:
+                product_gk = product.get('gk', [])
+                if not any(gk_number.upper() in gk.upper() for gk in product_gk):
+                    continue
+
+            results.append(product.copy())
+
+        return results
+
+    def update_product(self, product_id: int, updates: Dict) -> bool:
+        """
+        Обновление продукта
+
+        Args:
+            product_id: ID продукта
+            updates: обновленные данные
+
+        Returns:
+            bool: успешность обновления
+        """
+        try:
+            # Ищем продукт
+            for i, product in enumerate(self.products):
+                if product.get('id') == product_id:
+                    # Сохраняем старые данные
+                    old_data = product.copy()
+
+                    # Очищаем обновления
+                    cleaned_updates = {}
+                    for key, value in updates.items():
+                        if key in self.ALLOWED_FIELDS:
+                            cleaned_updates[key] = value
+
+                    # Применяем обновления
+                    for key, value in cleaned_updates.items():
+                        if key != 'id':
+                            product[key] = value
+
+                    product['last_updated'] = datetime.now().isoformat()
+
+                    # Валидация после обновления
+                    if not self._validate_product(product):
+                        logger.error(f"Продукт ID {product_id} стал невалидным после обновления")
+                        # Возвращаем старые данные
+                        self.products[i] = old_data
+                        return False
+
+                    # Сохраняем
+                    self._save_products()
+
+                    # Добавляем в историю
+                    self._add_to_history(
+                        product_id,
+                        'UPDATE',
+                        old_data,
+                        product,
+                        'manual',
+                        f"Обновлен продукт: {product.get('name')}"
+                    )
+
+                    logger.info(f"Обновлен продукт ID {product_id}")
+                    return True
+
+            logger.warning(f"Продукт ID {product_id} не найден")
+            return False
+
+        except Exception as e:
+            logger.error(f"Ошибка обновления продукта: {e}")
+            return False
+
+
+
+
     def validate_database(self) -> Dict[str, Any]:
         """Проверка целостности базы данных"""
         issues = []

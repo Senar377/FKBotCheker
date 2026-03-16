@@ -131,6 +131,11 @@ class SettingsDialog(QDialog):
         fuzzy_group = QGroupBox("Нечеткий поиск")
         fuzzy_layout = QVBoxLayout()
 
+        # Флажок для отображения вкладки нечеткого поиска
+        self.show_fuzzy_tab_check = QCheckBox("Показывать вкладку нечеткого поиска")
+        self.show_fuzzy_tab_check.setToolTip("Отображать вкладку с нечетким сравнением в основном окне")
+        fuzzy_layout.addWidget(self.show_fuzzy_tab_check)
+
         threshold_layout = QHBoxLayout()
         threshold_layout.addWidget(QLabel("Порог проверки (0-100):"))
         self.threshold_input = QLineEdit()
@@ -564,6 +569,9 @@ class SettingsDialog(QDialog):
         )
 
         # Настройки поиска
+        self.show_fuzzy_tab_check.setChecked(
+            self.settings.value("show_fuzzy_tab", False, type=bool)
+        )
         self.threshold_input.setText(
             self.settings.value("fuzzy_threshold", "60")
         )
@@ -693,6 +701,7 @@ class SettingsDialog(QDialog):
         self.settings.setValue("show_only_matched", self.show_only_matched_check.isChecked())
 
         # Настройки поиска
+        self.settings.setValue("show_fuzzy_tab", self.show_fuzzy_tab_check.isChecked())
         self.settings.setValue("fuzzy_threshold", self.threshold_input.text())
         self.settings.setValue("fuzzy_trust_threshold", self.trust_threshold_input.text())
         self.settings.setValue("enable_fuzzy", self.enable_fuzzy_check.isChecked())
@@ -812,6 +821,9 @@ class SettingsDialog(QDialog):
                 # Путь к Excel файлу
                 self.parent.excel_file_path = self.excel_path_input.text()
 
+                # Состояние вкладки нечеткого поиска
+                self.parent.show_fuzzy_tab = self.show_fuzzy_tab_check.isChecked()
+
                 # Применяем тему
                 self.parent.apply_theme()
 
@@ -847,6 +859,7 @@ class TableDetector:
             # Проверяем, является ли строка частью таблицы
             is_table_line = False
             cols = []
+            used_sep = None
 
             # Проверяем наличие разделителей
             for sep in separators:
@@ -854,10 +867,13 @@ class TableDetector:
                     # Считаем количество колонок
                     if sep == '  ':
                         cols = [col.strip() for col in re.split(r'\s{2,}', line) if col.strip()]
+                        used_sep = '  '
                     elif sep == '\\t':
                         cols = [col.strip() for col in line.split('\t') if col.strip()]
+                        used_sep = '\t'
                     else:
                         cols = [col.strip() for col in line.split(sep) if col.strip()]
+                        used_sep = sep
 
                     if len(cols) >= min_cols:
                         is_table_line = True
@@ -871,7 +887,8 @@ class TableDetector:
                     'line_num': i + 1,
                     'text': line,
                     'columns': cols,
-                    'raw_columns': line.split(sep) if sep else []
+                    'raw_columns': line.split(used_sep) if used_sep else [],
+                    'separator': used_sep
                 })
             else:
                 if in_table and len(current_table) >= min_rows:
@@ -907,7 +924,7 @@ class TableDetector:
 
         # Проверяем первую строку на наличие ключевых слов
         first_row = table_rows[0]
-        first_row_text = first_row['text'].lower()
+        first_row_text = ' '.join(first_row['columns']).lower()
 
         for keyword in header_keywords:
             if keyword in first_row_text:
@@ -916,7 +933,7 @@ class TableDetector:
         # Проверяем вторую строку
         if len(table_rows) > 1:
             second_row = table_rows[1]
-            second_row_text = second_row['text'].lower()
+            second_row_text = ' '.join(second_row['columns']).lower()
             for keyword in header_keywords:
                 if keyword in second_row_text:
                     return second_row
@@ -933,7 +950,10 @@ class TableDetector:
 
             # Если есть заголовки, пропускаем их
             if headers:
-                start_idx = table['rows'].index(headers) + 1 if headers in table['rows'] else 0
+                for i, row in enumerate(table['rows']):
+                    if row == headers:
+                        start_idx = i + 1
+                        break
 
             # Определяем индексы колонок
             name_col_idx = -1
@@ -943,11 +963,11 @@ class TableDetector:
             if headers:
                 for i, col in enumerate(headers['columns']):
                     col_lower = col.lower()
-                    if 'наименование' in col_lower or 'продукт' in col_lower or 'по' in col_lower:
+                    if any(kw in col_lower for kw in ['наименование', 'продукт', 'по', 'name']):
                         name_col_idx = i
-                    elif 'версия' in col_lower or 'вер' in col_lower:
+                    elif any(kw in col_lower for kw in ['версия', 'вер', 'version']):
                         version_col_idx = i
-                    elif 'гк' in col_lower or 'контракт' in col_lower:
+                    elif any(kw in col_lower for kw in ['гк', 'контракт', 'gk']):
                         gk_col_idx = i
 
             # Извлекаем данные из строк таблицы
@@ -957,26 +977,110 @@ class TableDetector:
                     'version': '',
                     'gk': [],
                     'line_num': row['line_num'],
-                    'source': 'table'
+                    'source': 'table',
+                    'table_start': table['start_line'],
+                    'table_end': table['end_line']
                 }
 
                 if name_col_idx >= 0 and name_col_idx < len(row['columns']):
-                    row_data['name'] = row['columns'][name_col_idx]
+                    name = row['columns'][name_col_idx]
+                    # Проверяем, не является ли имя мусором
+                    if not self._is_garbage(name):
+                        row_data['name'] = name
 
                 if version_col_idx >= 0 and version_col_idx < len(row['columns']):
-                    row_data['version'] = row['columns'][version_col_idx]
+                    version_text = row['columns'][version_col_idx]
+                    # Проверяем, не является ли версия мусором
+                    if not self._is_garbage(version_text):
+                        cleaned = self._clean_version(version_text)
+                        row_data['version'] = cleaned if cleaned else ''
 
                 if gk_col_idx >= 0 and gk_col_idx < len(row['columns']):
                     gk_text = row['columns'][gk_col_idx]
                     # Извлекаем ГК из текста
-                    gk_pattern = self.settings.value("gk_format", "ФКУ\\d{3,4}(?:[/-]\\d{2,4})?(?:/\\w+)?")
+                    gk_pattern = self.settings.value(
+                        "gk_format",
+                        r"ФКУ\d{3,4}(?:[/-]\d{2,4})?(?:/\w+)?"
+                    )
                     gk_matches = re.findall(gk_pattern, gk_text, re.IGNORECASE)
-                    row_data['gk'] = [gk.upper() for gk in gk_matches]
+                    row_data['gk'] = [gk.upper() for gk in gk_matches if not self._is_garbage(gk)]
 
-                if row_data['name'] or row_data['version'] or row_data['gk']:
+                if row_data['name'] and (row_data['version'] or row_data['gk']):
                     versions.append(row_data)
 
         return versions
+
+    def _clean_version(self, version_str):
+        """Очистка версии от мусора"""
+        if not version_str:
+            return ""
+
+        version = str(version_str).strip()
+
+        # Проверяем, не является ли строка мусором
+        garbage_patterns = [
+            r'\d{2}\.\d{2}\.\d{4}',  # даты DD.MM.YYYY
+            r'\d{2}\.\d{2}\.\d{2}',  # даты DD.MM.YY
+            r'\d{4}-\d{2}-\d{2}',  # даты YYYY-MM-DD
+            r'№\s*\d+',  # номера документов
+            r'приказ\s*\d+',  # приказы
+            r'https?://[^\s]+',  # ссылки на сайты
+        ]
+
+        for pattern in garbage_patterns:
+            if re.match(pattern, version, re.IGNORECASE):
+                return ""
+
+        # Убираем лишние пробелы и специальные символы в начале и конце
+        version = re.sub(r'^[^\d]+', '', version)
+        version = re.sub(r'[^\d\.]+$', '', version)
+
+        # Паттерны для поиска версии
+        patterns = [
+            r'(\d+\.\d+\.\d+\.\d+)',  # 1.2.3.4
+            r'(\d+\.\d+\.\d+)',  # 1.2.3
+            r'(\d+\.\d+)',  # 1.2
+            r'(\d+)',  # 1
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, version)
+            if match:
+                return match.group(1)
+
+        return ""
+
+    def _is_garbage(self, text):
+        """Проверка, является ли текст мусором"""
+        if not text:
+            return True
+
+        text_lower = text.lower()
+
+        # Проверяем на наличие ключевых слов мусора
+        garbage_keywords = [
+            'приказ', 'постановление', 'распоряжение', 'письмо',
+            'от', '№', 'дата', 'год', 'г.', 'редакция', 'ред.',
+            'утвержд', 'внесен', 'изменен', 'дополнен',
+            'http', 'https', 'www', '.ru', '.com', '.org', 'email'
+        ]
+
+        for keyword in garbage_keywords:
+            if keyword in text_lower:
+                return True
+
+        # Проверяем на паттерны дат
+        date_patterns = [
+            r'\d{2}\.\d{2}\.\d{4}',
+            r'\d{2}\.\d{2}\.\d{2}',
+            r'\d{4}-\d{2}-\d{2}',
+        ]
+
+        for pattern in date_patterns:
+            if re.search(pattern, text):
+                return True
+
+        return False
 
 
 class FileChecker:
