@@ -10,6 +10,7 @@ json_database/
 *.dll
 *.so
 *.dylib
+test.py
 
 # Виртуальное окружение
 venv/
