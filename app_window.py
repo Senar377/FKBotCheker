@@ -1,8 +1,14 @@
 # app_window.py
+"""
+Главное окно приложения для проверки технической документации
+С поддержкой истории версий документов, автосохранением и комментариями
+"""
+
 import re
 import time
 import yaml
 import logging
+import os
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple, List
 from pathlib import Path
@@ -13,9 +19,10 @@ from PyQt6.QtWidgets import (
     QProgressBar, QTableWidget, QTableWidgetItem,
     QGroupBox, QMessageBox, QSplitter, QLineEdit,
     QComboBox, QMenu, QFileDialog, QHeaderView, QStatusBar, QSizePolicy,
-    QFrame, QGridLayout, QTabWidget, QTextEdit, QScrollArea
+    QFrame, QGridLayout, QTabWidget, QTextEdit, QScrollArea,
+    QApplication, QInputDialog
 )
-from PyQt6.QtCore import Qt, QSettings, QTimer
+from PyQt6.QtCore import Qt, QSettings, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QAction, QColor, QTextCursor
 
 from document_checker import DocumentChecker
@@ -28,13 +35,15 @@ from check_worker import CheckWorker
 from manage_checks_dialog import ManageChecksDialog
 from versions_dialog import VersionsDialog
 from json_database import JSONDatabase
+from document_history import DocumentHistory
+from document_history_dialog import DocumentHistoryDialog
 
 # Настройка логирования
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('filename_parser.log', encoding='utf-8'),
+        logging.FileHandler('app.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -213,6 +222,12 @@ class DocumentInfoExtractor:
     def get_gk_date(self) -> Optional[str]:
         """Получение даты создания ГК"""
         return self.gk_manager.gk_date
+
+    def get_first_page_gk(self) -> Optional[str]:
+        """Получение первого ГК с первой страницы"""
+        if self.gk_manager.first_pages_gk:
+            return self.gk_manager.first_pages_gk[0]
+        return None
 
 
 class FilenameParser:
@@ -566,6 +581,10 @@ class MainWindow(QMainWindow):
         self.page_info = []
         self.document_viewer = None
 
+        # История документов
+        self.history = DocumentHistory(db=self.db)  # Инициализация истории документов
+        self.current_version_id = None    # ID текущей версии в истории
+
         self.document_info = {
             'filename': '',
             'file_size': 0,
@@ -575,6 +594,7 @@ class MainWindow(QMainWindow):
             'gk_numbers': [],
             'gk_with_subsystems': {},
             'gk_date': None,
+            'first_page_gk': None,  # Добавлено поле для ГК с первой страницы
             'parsed_filename': None
         }
 
@@ -1176,6 +1196,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("show_line_numbers", self.show_line_numbers)
 
     def init_ui(self):
+        """Инициализация пользовательского интерфейса"""
         self.setWindowTitle("Система проверки технической документации - Федеральное казначейство v3.0.0")
         self.setGeometry(100, 50, 1700, 950)
 
@@ -1185,6 +1206,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(15, 15, 15, 15)
         main_layout.setSpacing(10)
 
+        # Верхняя панель с кнопками
         top_panel = QWidget()
         top_layout = QHBoxLayout(top_panel)
         top_layout.setContentsMargins(0, 0, 0, 0)
@@ -1241,9 +1263,64 @@ class MainWindow(QMainWindow):
         """)
         left_buttons.addWidget(self.versions_btn)
 
+        # Кнопка истории документов
+        self.history_btn = QPushButton("📜 История")
+        self.history_btn.clicked.connect(self.open_document_history)
+        self.history_btn.setEnabled(True)
+        self.history_btn.setMinimumHeight(40)
+        self.history_btn.setMinimumWidth(100)
+        self.history_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9b59b6;
+                color: white;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #8e44ad;
+            }
+        """)
+        left_buttons.addWidget(self.history_btn)
+
+        # Кнопка для добавления комментария
+        self.comment_btn = QPushButton("💬 Комментарий")
+        self.comment_btn.clicked.connect(self.add_comment_to_current_version)
+        self.comment_btn.setEnabled(True)
+        self.comment_btn.setMinimumHeight(40)
+        self.comment_btn.setMinimumWidth(120)
+        self.comment_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f39c12;
+                color: white;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e67e22;
+            }
+        """)
+        left_buttons.addWidget(self.comment_btn)
+
+        # Кнопка для добавления тега
+        self.tag_btn = QPushButton("🏷️ Добавить тег")
+        self.tag_btn.clicked.connect(self.add_tag_to_current_version)
+        self.tag_btn.setEnabled(True)
+        self.tag_btn.setMinimumHeight(40)
+        self.tag_btn.setMinimumWidth(120)
+        self.tag_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #229954;
+            }
+        """)
+        left_buttons.addWidget(self.tag_btn)
+
         top_layout.addLayout(left_buttons)
         top_layout.addStretch()
 
+        # Правая панель с кнопками экспорта
         right_buttons = QHBoxLayout()
 
         export_buttons = [
@@ -1251,10 +1328,6 @@ class MainWindow(QMainWindow):
             ("📊 Excel", self.export_excel),
             ("📝 ODT", self.export_odt),
             ("📈 ODS", self.export_ods),
-            ("📧 Email", self.export_email),
-            ("📋 Паспорт", self.show_passport),
-            ("📑 Копировать", self.copy_notes),
-            ("🔄 Сравнить", self.compare_versions)
         ]
 
         for text, slot in export_buttons:
@@ -1268,6 +1341,7 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(top_panel)
 
+        # Панель статистики и прогресса
         stats_panel = QWidget()
         stats_layout = QHBoxLayout(stats_panel)
         stats_layout.setContentsMargins(0, 0, 0, 0)
@@ -1321,9 +1395,11 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(stats_panel)
 
+        # Основной сплиттер
         content_splitter = QSplitter(Qt.Orientation.Horizontal)
         content_splitter.setChildrenCollapsible(False)
 
+        # Левая панель с информацией
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(5, 5, 5, 5)
@@ -1341,30 +1417,36 @@ class MainWindow(QMainWindow):
         self.doc_stats_label.setStyleSheet("padding: 5px;")
         main_info_layout.addWidget(self.doc_stats_label)
 
-        left_layout.addWidget(main_info_group)
+        # Добавляем информацию о ГК и дате в основную информацию
+        gk_info_widget = QWidget()
+        gk_info_layout = QHBoxLayout(gk_info_widget)
+        gk_info_layout.setContentsMargins(0, 0, 0, 0)
+        gk_info_layout.setSpacing(10)
 
-        gk_group = QGroupBox("🔑 Государственные контракты")
-        gk_layout = QVBoxLayout(gk_group)
-
-        gk_date_widget = QWidget()
-        gk_date_layout = QHBoxLayout(gk_date_widget)
-        gk_date_layout.setContentsMargins(0, 0, 0, 0)
-        gk_date_layout.addWidget(QLabel("📅 Дата создания:"))
+        gk_info_layout.addWidget(QLabel("📅 Дата ГК:"))
         self.gk_date_label = QLabel("не найдена")
         self.gk_date_label.setStyleSheet("color: #e67e22; font-weight: bold;")
-        gk_date_layout.addWidget(self.gk_date_label)
-        gk_date_layout.addStretch()
-        gk_layout.addWidget(gk_date_widget)
+        gk_info_layout.addWidget(self.gk_date_label)
 
-        gk_list_label = QLabel("Найденные ГК:")
-        gk_layout.addWidget(gk_list_label)
+        gk_info_layout.addWidget(QLabel("|"))
 
-        self.gk_list_widget = QListWidget()
-        self.gk_list_widget.setMaximumHeight(150)
-        gk_layout.addWidget(self.gk_list_widget)
+        gk_info_layout.addWidget(QLabel("🔑 ГК:"))
+        self.gk_number_label = QLabel("не найден")
+        self.gk_number_label.setStyleSheet("color: #3498db; font-weight: bold;")
+        gk_info_layout.addWidget(self.gk_number_label)
 
-        left_layout.addWidget(gk_group)
+        gk_info_layout.addStretch()
 
+        main_info_layout.addWidget(gk_info_widget)
+
+        # Информация о текущей версии
+        self.version_info_label = QLabel("📜 Версия в истории: не сохранена")
+        self.version_info_label.setStyleSheet("color: #3498db; font-size: 10px; padding: 2px;")
+        main_info_layout.addWidget(self.version_info_label)
+
+        left_layout.addWidget(main_info_group)
+
+        # Группа расшифровки имени файла
         filename_group = QGroupBox("📁 Расшифровка имени файла")
         filename_layout = QVBoxLayout(filename_group)
 
@@ -1378,11 +1460,13 @@ class MainWindow(QMainWindow):
 
         left_layout.addStretch()
 
+        # Правая панель с результатами
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(5, 5, 5, 5)
         right_layout.setSpacing(10)
 
+        # Панель фильтров
         filter_panel = QWidget()
         filter_layout = QHBoxLayout(filter_panel)
         filter_layout.setContentsMargins(0, 0, 0, 0)
@@ -1405,6 +1489,7 @@ class MainWindow(QMainWindow):
 
         right_layout.addWidget(filter_panel)
 
+        # Таблица результатов
         self.results_table = QTableWidget()
         self.results_table.setColumnCount(7)
         self.results_table.setHorizontalHeaderLabels(
@@ -1442,17 +1527,20 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(content_splitter, 1)
 
+        # Статус бар
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_label = QLabel("✅ Готово к работе")
         self.status_bar.addPermanentWidget(self.status_label)
-        self.status_bar.showMessage("Федеральное казначейство • Система проверки технической документации • v2.2.0")
+        self.status_bar.showMessage("Федеральное казначейство • Система проверки технической документации • v3.0.0")
 
         self.create_menu()
 
     def create_menu(self):
+        """Создание меню приложения"""
         menubar = self.menuBar()
 
+        # Меню Файл
         file_menu = menubar.addMenu("Файл")
 
         load_action = QAction("Загрузить документ", self)
@@ -1482,6 +1570,23 @@ class MainWindow(QMainWindow):
         exit_action.setShortcut("Ctrl+Q")
         file_menu.addAction(exit_action)
 
+        # Меню Вид
+        view_menu = menubar.addMenu("Вид")
+
+        history_action = QAction("📜 История документа", self)
+        history_action.triggered.connect(self.open_document_history)
+        history_action.setShortcut("Ctrl+H")
+        view_menu.addAction(history_action)
+
+        comments_action = QAction("💬 Комментарии к текущей версии", self)
+        comments_action.triggered.connect(self.add_comment_to_current_version)
+        view_menu.addAction(comments_action)
+
+        tags_action = QAction("🏷️ Добавить тег", self)
+        tags_action.triggered.connect(self.add_tag_to_current_version)
+        view_menu.addAction(tags_action)
+
+        # Меню Проверка
         check_menu = menubar.addMenu("Проверка")
 
         run_action = QAction("Запустить проверку", self)
@@ -1499,161 +1604,227 @@ class MainWindow(QMainWindow):
         manage_checks_action.setShortcut("Ctrl+M")
         check_menu.addAction(manage_checks_action)
 
+        # Меню Справка
         help_menu = menubar.addMenu("Справка")
 
         about_action = QAction("О программе", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
 
-    def open_manage_checks(self):
-        """Открыть диалог управления проверками"""
-        dialog = ManageChecksDialog(self, self.db)
-        dialog.config_changed.connect(self.on_config_changed)
-        dialog.exec()
+    # ==================== МЕТОДЫ ДЛЯ РАБОТЫ С ИСТОРИЕЙ ====================
 
-    def on_config_changed(self, config):
-        """Обработка изменения конфигурации"""
-        self.update_checker_config()
-        QMessageBox.information(self, "Успех", "Конфигурация проверок обновлена!")
+    def save_to_history(self, auto_save: bool = False):
+        """
+        Сохранение текущего документа и результатов в историю
 
-    def add_new_check(self):
-        """Добавить новую проверку"""
-        try:
-            dialog = AddCheckDialog(self)
-            if dialog.exec():
-                check_data = dialog.get_check_data()
-                check_id = self.db.add_check(check_data)
-                if check_id:
-                    self.update_checker_config()
-                    QMessageBox.information(self, "Успех", f"Новая проверка добавлена с ID: {check_id}")
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            QMessageBox.critical(self, "Ошибка",
-                                 f"Ошибка при добавлении проверки:\n{str(e)}\n\nПодробности:\n{error_details}")
+        Args:
+            auto_save: True если это автосохранение при закрытии
+        """
+        if not self.document_text:
+            return None
 
-    def load_default_config(self):
-        """Загрузка конфигурации по умолчанию"""
-        default_config = {
-            'checks': [
-                {
-                    'group': 'Импортозамещение',
-                    'subchecks': [
-                        {
-                            'name': 'Oracle',
-                            'type': 'no_text_present',
-                            'aliases': ['Oracle', 'Oracle Database', 'Oracle DB', 'Oracle 11g', 'Oracle 12c',
-                                        'Oracle 19c']
-                        },
-                        {
-                            'name': 'Запрещённое ПО',
-                            'type': 'no_text_present',
-                            'aliases': ['Cisco', 'Juniper', 'Check Point', 'Palo Alto',
-                                        'Windows Server', 'Microsoft SQL', 'IBM', 'HP', 'Dell EMC']
-                        },
-                        {
-                            'name': 'Российское ПО',
-                            'type': 'text_present',
-                            'aliases': ['Российское ПО', 'отечественное', 'реестр российского ПО',
-                                        'МойОфис', 'Астра Линукс', 'РЕД ОС']
-                        }
-                    ]
-                },
-                {
-                    'group': 'Функциональные требования',
-                    'subchecks': [
-                        {
-                            'name': 'Требование безопасности',
-                            'type': 'text_present',
-                            'aliases': ['безопасность', 'защита данных', 'конфиденциальность',
-                                        'целостность', 'доступность', 'СЗИ']
-                        },
-                        {
-                            'name': 'Круглосуточная работа',
-                            'type': 'fuzzy_text_present',
-                            'text': 'система должна обеспечивать круглосуточную работу',
-                            'threshold': self.fuzzy_threshold,
-                            'trust_threshold': self.fuzzy_trust_threshold
-                        }
-                    ]
-                },
-                {
-                    'group': 'СОБИ ФК',
-                    'subchecks': [
-                        {
-                            'name': 'Соответствие стандартам',
-                            'type': 'fuzzy_text_present',
-                            'text': 'документ должен соответствовать требованиям федерального казначейства',
-                            'threshold': self.fuzzy_threshold,
-                            'trust_threshold': self.fuzzy_trust_threshold
-                        },
-                        {
-                            'name': 'Использование таблиц',
-                            'type': 'text_present_in_any_table',
-                            'aliases': ['коммутатор', 'маршрутизатор', 'сервер', 'хранилище']
-                        }
-                    ]
-                }
-            ]
+        logger.info("=" * 50)
+        logger.info("СОХРАНЕНИЕ В ИСТОРИЮ")
+        logger.info(f"Auto save: {auto_save}")
+        logger.info(f"Текущая версия: {self.current_version_id}")
+        logger.info(f"Есть результаты: {bool(self.last_results)}")
+        if self.last_results:
+            logger.info(f"Количество результатов: {len(self.last_results)}")
+
+        # Проверяем, изменился ли документ по сравнению с последней сохраненной версией
+        if self.current_version_id:
+            last_version = self.history.get_version(self.current_version_id)
+            if last_version:
+                logger.info(f"Последняя версия: {last_version.version_id}")
+                logger.info(f"Текст совпадает: {last_version.document_text == self.document_text}")
+
+                if last_version.document_text == self.document_text:
+                    # Текст не изменился, просто обновляем результаты если они есть
+                    if self.last_results and last_version.check_results != self.last_results:
+                        logger.info("Обновление результатов существующей версии")
+                        last_version.check_results = self.last_results
+                        last_version.update_stats()
+
+                        # Получаем метаданные версии из истории
+                        version_info = self.history.history_data['versions'].get(self.current_version_id, {})
+                        if version_info:
+                            # Обновляем данные
+                            version_info['check_results'] = self.last_results
+                            version_info['stats'] = last_version.stats
+                            version_info['last_updated'] = datetime.now().isoformat()
+
+                            # Сохраняем
+                            self.history._save_history_data()
+
+                            # Если это автосохранение, добавляем пометку
+                            if auto_save:
+                                self.history.add_comment_to_version(
+                                    self.current_version_id,
+                                    "Автосохранение при закрытии",
+                                    "system"
+                                )
+
+                            logger.info(f"Обновлены результаты для версии {self.current_version_id}")
+
+                    return last_version
+
+        # Создаем новую версию
+        logger.info("СОЗДАНИЕ НОВОЙ ВЕРСИИ")
+        metadata = {
+            'theme': self.theme_mode,
+            'settings': {
+                'fuzzy_threshold': self.fuzzy_threshold,
+                'fuzzy_trust_threshold': self.fuzzy_trust_threshold
+            }
         }
 
-        self.checker.config = default_config
+        # Добавляем пометку об автосохранении
+        if auto_save:
+            metadata['save_type'] = 'auto_close'
 
-    def update_config(self, config):
-        """Обновление конфигурации"""
-        self.checker.config = config
+        version = self.history.add_version(
+            file_path=self.current_file_path or "unknown",
+            document_text=self.document_text,
+            check_results=self.last_results,
+            document_info=self.document_info,
+            metadata=metadata,
+            auto_save=auto_save
+        )
+
+        # Если это автосохранение, добавляем комментарий
+        if auto_save:
+            self.history.add_comment_to_version(
+                version.version_id,
+                "Автоматически сохранено при закрытии приложения",
+                "system"
+            )
+
+        self.current_version_id = version.version_id
+        logger.info(f"СОЗДАНА НОВАЯ ВЕРСИЯ: {version.version_id}")
+
+        # Выводим отладочную информацию
+        self.history.debug_info()
+
+        # Обновляем статус-бар
+        save_type = "Автосохранение" if auto_save else "Сохранение"
+        self.status_bar.showMessage(
+            f"{save_type}: Версия {version.version_id[:16]}..."
+        )
+
+        # Обновляем информацию о версии в левой панели
+        self.update_document_info()
+
+        return version
+
+    def open_document_history(self):
+        """Открыть диалог истории документа"""
+        dialog = DocumentHistoryDialog(self.history, self.current_file_path, self)
+        dialog.version_selected.connect(self.load_version_from_history)
+        dialog.exec()
+
+    def load_version_from_history(self, version_id: str):
+        """Загрузка версии из истории"""
+        version = self.history.get_version(version_id)
+
+        if not version:
+            QMessageBox.warning(self, "Ошибка", "Не удалось загрузить версию")
+            return
+
+        # Спрашиваем, сохранять ли текущую версию перед загрузкой
+        if self.document_text:
+            reply = QMessageBox.question(
+                self, "Сохранение",
+                "Сохранить текущий документ в истории перед загрузкой другой версии?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
+            )
+
+            if reply == QMessageBox.StandardButton.Yes:
+                self.save_to_history()
+            elif reply == QMessageBox.StandardButton.Cancel:
+                return
+
+        # Загружаем текст документа
+        self.document_text = version.document_text
+
+        # Загружаем информацию о документе
+        self.document_info = version.document_info.copy()
+        self.current_file_path = version.file_path if os.path.exists(version.file_path) else None
+
+        # Загружаем результаты проверки
+        self.last_results = version.check_results
+
+        # Восстанавливаем информацию о страницах
+        self.calculate_page_info()
+
+        # Обновляем интерфейс
+        self.update_document_info()
+
+        if self.last_results:
+            self.display_results(self.last_results)
+
+            total = len(self.last_results)
+            passed = sum(1 for r in self.last_results if r.get('passed', False) and not r.get('needs_verification', False))
+            failed = sum(1 for r in self.last_results if not r.get('passed', False) and not r.get('needs_verification', False))
+            warning = sum(1 for r in self.last_results if r.get('needs_verification', False))
+
+            self.update_stats(total, passed, failed, warning, 0)
+            self.view_with_errors_btn.setEnabled(failed > 0 or warning > 0)
+
+        self.run_check_btn.setEnabled(True)
+        self.versions_btn.setEnabled(True)
+        self.current_version_id = version_id
+
+        # Обновляем информацию о версии
+        self.update_document_info()
+
+        # Показываем информацию о комментариях
+        if version.comments:
+            QMessageBox.information(
+                self, "Комментарии к версии",
+                f"У этой версии есть {len(version.comments)} комментариев.\n"
+                f"Последний: {version.comments[-1].get('text', '')[:100]}..."
+            )
+
+        logger.info(f"Загружена версия из истории: {version_id}")
+
         QMessageBox.information(self, "Успех",
-                                "Конфигурация успешно обновлена! Перезапустите приложение для применения изменений.")
+                               f"Версия {version_id[:16]}... загружена из истории")
 
-    def update_document_info(self):
-        """Обновление информации о документе в левой панели"""
-        if self.current_file_path:
-            file_name = self.document_info['filename']
-            file_type = self.document_info['file_type']
-            pages = self.document_info['page_count']
-            words = self.document_info['word_count']
-            size = self.document_info['file_size']
+    def add_comment_to_current_version(self):
+        """Добавление комментария к текущей версии"""
+        if not self.current_version_id:
+            QMessageBox.warning(self, "Ошибка", "Нет текущей версии в истории. Сначала загрузите или сохраните документ.")
+            return
 
-            self.doc_name_label.setText(f"📄 Файл: {file_name}")
-            self.doc_stats_label.setText(f"📊 Тип: {file_type}, {pages} стр., {words} слов, {size:.2f} МБ")
+        comment, ok = QInputDialog.getMultiLineText(
+            self, "Добавить комментарий",
+            "Введите комментарий к текущей версии:"
+        )
 
-            if self.document_info['gk_date']:
-                self.gk_date_label.setText(self.document_info['gk_date'])
-                self.gk_date_label.setStyleSheet("color: #e67e22; font-weight: bold;")
+        if ok and comment:
+            if self.history.add_comment_to_version(self.current_version_id, comment, "user"):
+                QMessageBox.information(self, "Успех", "Комментарий добавлен")
             else:
-                self.gk_date_label.setText("не найдена")
-                self.gk_date_label.setStyleSheet("")
+                QMessageBox.warning(self, "Ошибка", "Не удалось добавить комментарий")
 
-            self.gk_list_widget.clear()
-            if self.document_info['gk_numbers']:
-                gk_with_subsystems = self.info_extractor.get_gk_with_subsystems()
-                for gk in self.document_info['gk_numbers']:
-                    subsystem = gk_with_subsystems.get(gk, '')
-                    if subsystem:
-                        self.gk_list_widget.addItem(f"{gk} [{subsystem}]")
-                    else:
-                        self.gk_list_widget.addItem(gk)
+    def add_tag_to_current_version(self):
+        """Добавление тега к текущей версии"""
+        if not self.current_version_id:
+            QMessageBox.warning(self, "Ошибка", "Нет текущей версии в истории. Сначала загрузите или сохраните документ.")
+            return
+
+        tag, ok = QInputDialog.getText(
+            self, "Добавить тег",
+            "Введите тег для текущей версии:"
+        )
+
+        if ok and tag:
+            if self.history.add_tag_to_version(self.current_version_id, tag):
+                QMessageBox.information(self, "Успех", f"Тег '{tag}' добавлен")
             else:
-                self.gk_list_widget.addItem("ГК не найдены")
+                QMessageBox.warning(self, "Ошибка", "Не удалось добавить тег")
 
-            if self.document_info['parsed_filename']:
-                parsed = self.document_info['parsed_filename']
-                decoded = parsed['decoded']
-
-                text = "✅ Соответствует стандарту ФАП\n\n"
-                for key, value in decoded.items():
-                    text += f"• {value}\n"
-
-                self.filename_info.setText(text)
-            else:
-                self.filename_info.setText("❌ Имя файла не соответствует стандарту ФАП")
-        else:
-            self.doc_name_label.setText("📄 Файл: не загружен")
-            self.doc_stats_label.setText("📊 Статистика: -")
-            self.gk_date_label.setText("не найдена")
-            self.gk_list_widget.clear()
-            self.gk_list_widget.addItem("ГК не найдены")
-            self.filename_info.setText("Информация отсутствует")
+    # ==================== МЕТОДЫ ЗАГРУЗКИ ДОКУМЕНТА ====================
 
     def load_document(self):
         """Загрузка документа (DOCX, TXT)"""
@@ -1730,6 +1901,7 @@ class MainWindow(QMainWindow):
             self.document_info['gk_numbers'] = self.info_extractor.extract_gk_numbers(self.document_text,
                                                                                       self.page_info)
             self.document_info['gk_date'] = self.info_extractor.get_gk_date()
+            self.document_info['first_page_gk'] = self.info_extractor.get_first_page_gk()
 
             self.update_document_info()
 
@@ -1741,10 +1913,15 @@ class MainWindow(QMainWindow):
             self.last_results = []
             self.update_stats(0, 0, 0, 0, 0)
 
+            # Сохраняем в историю (без результатов проверки пока)
+            self.save_to_history()
+
             logger.info(f"Документ загружен: {file_name}, размер: {file_size:.2f} МБ, страниц: {len(self.page_info)}")
             logger.info(f"Найдено ГК: {len(self.document_info['gk_numbers'])}")
             if self.document_info['gk_date']:
                 logger.info(f"Дата ГК: {self.document_info['gk_date']}")
+            if self.document_info['first_page_gk']:
+                logger.info(f"Первый ГК с первой страницы: {self.document_info['first_page_gk']}")
 
             QMessageBox.information(self, "Успех",
                                     f"Документ успешно загружен!\n\nНайдено ГК: {len(self.document_info['gk_numbers'])}")
@@ -1793,71 +1970,74 @@ class MainWindow(QMainWindow):
 
         logger.info(f"Документ разбит на {len(self.page_info)} страниц")
 
-    def view_document(self):
-        """Просмотр содержимого документа"""
-        if not self.document_text:
-            return
+    def update_document_info(self):
+        """Обновление информации о документе в левой панели"""
+        if self.current_file_path:
+            file_name = self.document_info['filename']
+            file_type = self.document_info['file_type']
+            pages = self.document_info['page_count']
+            words = self.document_info['word_count']
+            size = self.document_info['file_size']
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Просмотр документа")
-        dialog.resize(1000, 800)
-        dialog.setStyleSheet(self.styleSheet())
+            self.doc_name_label.setText(f"📄 Файл: {file_name}")
+            self.doc_stats_label.setText(f"📊 Тип: {file_type}, {pages} стр., {words} слов, {size:.2f} МБ")
 
-        layout = QVBoxLayout()
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(10)
+            # Обновляем информацию о ГК
+            if self.document_info['gk_date']:
+                self.gk_date_label.setText(self.document_info['gk_date'])
+                self.gk_date_label.setStyleSheet("color: #e67e22; font-weight: bold;")
+            else:
+                self.gk_date_label.setText("не найдена")
+                self.gk_date_label.setStyleSheet("")
 
-        from PyQt6.QtWidgets import QTextBrowser
-        text_browser = QTextBrowser()
+            # Обновляем номер ГК (берем первый с первой страницы или первый найденный)
+            if self.document_info['first_page_gk']:
+                gk_text = self.document_info['first_page_gk']
+            elif self.document_info['gk_numbers']:
+                gk_text = self.document_info['gk_numbers'][0]
+            else:
+                gk_text = "не найден"
 
-        if self.show_line_numbers:
-            lines = self.document_text.split('\n')
-            numbered_text = ""
-            for i, line in enumerate(lines):
-                numbered_text += f"{i + 1:4d}: {line}\n"
-            text_browser.setPlainText(numbered_text)
+            self.gk_number_label.setText(gk_text)
+
+            # Информация о версии в истории
+            if self.current_version_id:
+                version = self.history.get_version(self.current_version_id)
+                if version:
+                    comment_count = len(version.comments)
+                    tag_count = len(version.tags)
+                    self.version_info_label.setText(
+                        f"📜 Версия: {self.current_version_id[:16]}... "
+                        f"(💬 {comment_count} | 🏷️ {tag_count})"
+                    )
+                    self.version_info_label.setStyleSheet("color: #27ae60; font-size: 10px; padding: 2px;")
+                else:
+                    self.version_info_label.setText(f"📜 Версия: {self.current_version_id[:16]}...")
+                    self.version_info_label.setStyleSheet("color: #27ae60; font-size: 10px; padding: 2px;")
+            else:
+                self.version_info_label.setText("📜 Версия в истории: не сохранена")
+                self.version_info_label.setStyleSheet("color: #3498db; font-size: 10px; padding: 2px;")
+
+            if self.document_info['parsed_filename']:
+                parsed = self.document_info['parsed_filename']
+                decoded = parsed['decoded']
+
+                text = "✅ Соответствует стандарту ФАП\n\n"
+                for key, value in decoded.items():
+                    text += f"• {value}\n"
+
+                self.filename_info.setText(text)
+            else:
+                self.filename_info.setText("❌ Имя файла не соответствует стандарту ФАП")
         else:
-            text_browser.setPlainText(self.document_text)
+            self.doc_name_label.setText("📄 Файл: не загружен")
+            self.doc_stats_label.setText("📊 Статистика: -")
+            self.version_info_label.setText("📜 Версия в истории: не сохранена")
+            self.gk_date_label.setText("не найдена")
+            self.gk_number_label.setText("не найден")
+            self.filename_info.setText("Информация отсутствует")
 
-        text_browser.setFont(QFont("Consolas", 10))
-
-        layout.addWidget(QLabel(f"Содержимое документа ({len(self.document_text)} символов):"))
-        layout.addWidget(text_browser)
-
-        close_btn = QPushButton("Закрыть")
-        close_btn.clicked.connect(dialog.close)
-        close_btn.setMinimumHeight(35)
-        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
-
-        dialog.setLayout(layout)
-        dialog.exec()
-
-    def view_document_with_errors(self):
-        """Просмотр документа с подсветкой ТОЛЬКО ошибок"""
-        if not self.document_text:
-            QMessageBox.warning(self, "Ошибка", "Нет загруженного документа")
-            return
-
-        if not self.last_results:
-            QMessageBox.warning(self, "Ошибка", "Нет результатов проверки для отображения")
-            return
-
-        error_results = []
-        for result in self.last_results:
-            is_error = result.get('is_error', False)
-            needs_check = result.get('needs_verification', False)
-            passed = result.get('passed', False)
-
-            if is_error or (not passed and not needs_check) or needs_check:
-                error_results.append(result)
-
-        if not error_results:
-            QMessageBox.information(self, "Нет ошибок",
-                                    "В документе не найдено ошибок или проверок, требующих внимания.")
-            return
-
-        self.document_viewer = DocumentViewer(self, self.document_text, error_results)
-        self.document_viewer.exec()
+    # ==================== МЕТОДЫ ПРОВЕРКИ ====================
 
     def run_check(self):
         """Запуск проверки"""
@@ -1897,6 +2077,9 @@ class MainWindow(QMainWindow):
         """Обработка завершения проверки"""
         elapsed_time = time.time() - self.start_time
         self.last_results = results
+
+        # Сохраняем результаты в историю
+        self.save_to_history()
 
         self.display_results(results)
 
@@ -2003,54 +2186,34 @@ class MainWindow(QMainWindow):
 
         self.results_table.resizeRowsToContents()
 
-    def show_critical_issue(self, issue):
-        """Показать предупреждение о критической проблеме"""
-        msg_box = QMessageBox(self)
-        msg_box.setIcon(QMessageBox.Icon.Warning)
-        msg_box.setWindowTitle("Обнаружена критическая проблема")
-        msg_box.setText(
-            f"<b>Обнаружена критическая проблема</b><br><br>"
-            f"<b>Проверка:</b> {issue.get('name', 'Неизвестно')}<br>"
-            f"<b>Результат:</b> {issue.get('message', '')}<br><br>"
-            f"<b>Местоположение:</b> Таблица 901: \"Local Area Network – активные коммутаторы\"<br>"
-            f"<b>Наименование:</b> Cisco Catalyst 2960-X<br>"
-            f"<b>Требования:</b> Использовать оборудование из реестра российского ПО"
-        )
-        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        msg_box.exec()
+    # ==================== МЕТОДЫ ПРОСМОТРА ДОКУМЕНТА ====================
 
-    def convert_old_config(self):
-        """Конвертировать старый YAML конфиг в новую базу данных"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Выберите старый конфиг YAML", "", "YAML files (*.yaml *.yml);;All files (*.*)"
-        )
-
-        if not file_path:
+    def view_document_with_errors(self):
+        """Просмотр документа с подсветкой ТОЛЬКО ошибок"""
+        if not self.document_text:
+            QMessageBox.warning(self, "Ошибка", "Нет загруженного документа")
             return
 
-        try:
-            # Создаем резервную копию текущей БД
-            backup_path = self.db.create_backup('before_conversion')
+        if not self.last_results:
+            QMessageBox.warning(self, "Ошибка", "Нет результатов проверки для отображения")
+            return
 
-            # Импортируем с объединением
-            added, updated, skipped, details = self.db.import_checks_from_yaml(file_path, auto_merge=True)
+        error_results = []
+        for result in self.last_results:
+            is_error = result.get('is_error', False)
+            needs_check = result.get('needs_verification', False)
+            passed = result.get('passed', False)
 
-            # Обновляем конфиг проверяльщика
-            self.update_checker_config()
+            if is_error or (not passed and not needs_check) or needs_check:
+                error_results.append(result)
 
-            # Показываем результат
-            msg = f"Конвертация завершена!\n\n"
-            msg += f"✅ Добавлено новых проверок: {added}\n"
-            msg += f"🔄 Обновлено существующих: {updated}\n"
-            msg += f"⏭️ Пропущено дубликатов: {skipped}\n\n"
+        if not error_results:
+            QMessageBox.information(self, "Нет ошибок",
+                                    "В документе не найдено ошибок или проверок, требующих внимания.")
+            return
 
-            if backup_path:
-                msg += f"Резервная копия создана: {backup_path}"
-
-            QMessageBox.information(self, "Результат конвертации", msg)
-
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось конвертировать конфиг:\n{str(e)}")
+        self.document_viewer = DocumentViewer(self, self.document_text, error_results)
+        self.document_viewer.exec()
 
     def go_to_error_in_viewer(self, row, result):
         """Перейти к ошибке в просмотре документа"""
@@ -2070,6 +2233,149 @@ class MainWindow(QMainWindow):
 
         self.document_viewer.show_all_errors()
 
+    def go_to_selected_error(self):
+        """Перейти к выбранной ошибке в документе"""
+        selected_rows = self.results_table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        row = selected_rows[0].row()
+        result_item = self.results_table.item(row, 0)
+        if not result_item:
+            return
+
+        result = result_item.data(Qt.ItemDataRole.UserRole)
+        if result:
+            self.go_to_error_in_viewer(row, result)
+
+    def go_to_error_from_table(self, index):
+        """Перейти к ошибке по двойному клику в таблице"""
+        row = index.row()
+        result_item = self.results_table.item(row, 0)
+        if not result_item:
+            return
+
+        result = result_item.data(Qt.ItemDataRole.UserRole)
+        if result:
+            self.go_to_error_in_viewer(row, result)
+
+    # ==================== МЕТОДЫ УПРАВЛЕНИЯ ПРОВЕРКАМИ ====================
+
+    def open_manage_checks(self):
+        """Открыть диалог управления проверками"""
+        dialog = ManageChecksDialog(self, self.db)
+        dialog.config_changed.connect(self.on_config_changed)
+        dialog.exec()
+
+    def on_config_changed(self, config):
+        """Обработка изменения конфигурации"""
+        self.update_checker_config()
+        QMessageBox.information(self, "Успех", "Конфигурация проверок обновлена!")
+
+    def add_new_check(self):
+        """Добавить новую проверку"""
+        try:
+            dialog = AddCheckDialog(self)
+            if dialog.exec():
+                check_data = dialog.get_check_data()
+                check_id = self.db.add_check(check_data)
+                if check_id:
+                    self.update_checker_config()
+                    QMessageBox.information(self, "Успех", f"Новая проверка добавлена с ID: {check_id}")
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            QMessageBox.critical(self, "Ошибка",
+                                 f"Ошибка при добавлении проверки:\n{str(e)}\n\nПодробности:\n{error_details}")
+
+    # ==================== МЕТОДЫ РАБОТЫ С КОНФИГУРАЦИЕЙ ====================
+
+    def load_default_config(self):
+        """Загрузка конфигурации по умолчанию"""
+        default_config = {
+            'checks': [
+                {
+                    'group': 'Импортозамещение',
+                    'subchecks': [
+                        {
+                            'name': 'Oracle',
+                            'type': 'no_text_present',
+                            'aliases': ['Oracle', 'Oracle Database', 'Oracle DB', 'Oracle 11g', 'Oracle 12c',
+                                        'Oracle 19c']
+                        },
+                        {
+                            'name': 'Запрещённое ПО',
+                            'type': 'no_text_present',
+                            'aliases': ['Cisco', 'Juniper', 'Check Point', 'Palo Alto',
+                                        'Windows Server', 'Microsoft SQL', 'IBM', 'HP', 'Dell EMC']
+                        },
+                        {
+                            'name': 'Российское ПО',
+                            'type': 'text_present',
+                            'aliases': ['Российское ПО', 'отечественное', 'реестр российского ПО',
+                                        'МойОфис', 'Астра Линукс', 'РЕД ОС']
+                        }
+                    ]
+                },
+                {
+                    'group': 'Функциональные требования',
+                    'subchecks': [
+                        {
+                            'name': 'Требование безопасности',
+                            'type': 'text_present',
+                            'aliases': ['безопасность', 'защита данных', 'конфиденциальность',
+                                        'целостность', 'доступность', 'СЗИ']
+                        },
+                        {
+                            'name': 'Круглосуточная работа',
+                            'type': 'fuzzy_text_present',
+                            'text': 'система должна обеспечивать круглосуточную работу',
+                            'threshold': self.fuzzy_threshold,
+                            'trust_threshold': self.fuzzy_trust_threshold
+                        }
+                    ]
+                },
+                {
+                    'group': 'СОБИ ФК',
+                    'subchecks': [
+                        {
+                            'name': 'Соответствие стандартам',
+                            'type': 'fuzzy_text_present',
+                            'text': 'документ должен соответствовать требованиям федерального казначейства',
+                            'threshold': self.fuzzy_threshold,
+                            'trust_threshold': self.fuzzy_trust_threshold
+                        },
+                        {
+                            'name': 'Использование таблиц',
+                            'type': 'text_present_in_any_table',
+                            'aliases': ['коммутатор', 'маршрутизатор', 'сервер', 'хранилище']
+                        }
+                    ]
+                }
+            ]
+        }
+
+        self.checker.config = default_config
+
+    def open_config_editor(self):
+        """Открытие редактора конфигурации"""
+        self.editor = ConfigEditor(self)
+        self.editor.exec()
+
+    def open_settings(self):
+        """Открыть диалог настроек"""
+        dialog = SettingsDialog(self)
+        if dialog.exec():
+            for check_group in self.checker.config.get('checks', []):
+                for subcheck in check_group.get('subchecks', []):
+                    if subcheck.get('type', '').startswith('fuzzy'):
+                        subcheck['threshold'] = self.fuzzy_threshold
+                        subcheck['trust_threshold'] = self.fuzzy_trust_threshold
+
+            QMessageBox.information(self, "Настройки", "Настройки применены")
+
+    # ==================== МЕТОДЫ ДЛЯ ВЕРСИЙ ПО ====================
+
     def show_versions_dialog(self):
         """Показать диалог с версиями БПО/СПО"""
         if not self.document_text:
@@ -2080,12 +2386,7 @@ class MainWindow(QMainWindow):
         dialog = VersionsDialog(self, self.document_text, self.page_info)
         dialog.exec()
 
-    def resize_table_columns(self):
-        """Автоматически изменить размер столбцов таблицы"""
-        self.results_table.resizeColumnsToContents()
-        self.results_table.setColumnWidth(0, min(300, self.results_table.columnWidth(0)))
-        self.results_table.setColumnWidth(1, min(200, self.results_table.columnWidth(1)))
-        self.results_table.setColumnWidth(6, 400)
+    # ==================== МЕТОДЫ ФИЛЬТРАЦИИ И ЭКСПОРТА ====================
 
     def filter_results_table(self):
         """Фильтрация таблицы результатов"""
@@ -2117,6 +2418,13 @@ class MainWindow(QMainWindow):
                         show_row = False
 
             self.results_table.setRowHidden(row, not show_row)
+
+    def resize_table_columns(self):
+        """Автоматически изменить размер столбцов таблицы"""
+        self.results_table.resizeColumnsToContents()
+        self.results_table.setColumnWidth(0, min(300, self.results_table.columnWidth(0)))
+        self.results_table.setColumnWidth(1, min(200, self.results_table.columnWidth(1)))
+        self.results_table.setColumnWidth(6, 400)
 
     def show_results_context_menu(self, position):
         """Показать контекстное меню для таблицы результатов"""
@@ -2197,32 +2505,6 @@ class MainWindow(QMainWindow):
             dialog.setLayout(layout)
             dialog.exec()
 
-    def go_to_selected_error(self):
-        """Перейти к выбранной ошибке в документе"""
-        selected_rows = self.results_table.selectionModel().selectedRows()
-        if not selected_rows:
-            return
-
-        row = selected_rows[0].row()
-        result_item = self.results_table.item(row, 0)
-        if not result_item:
-            return
-
-        result = result_item.data(Qt.ItemDataRole.UserRole)
-        if result:
-            self.go_to_error_in_viewer(row, result)
-
-    def go_to_error_from_table(self, index):
-        """Перейти к ошибке по двойному клику в таблице"""
-        row = index.row()
-        result_item = self.results_table.item(row, 0)
-        if not result_item:
-            return
-
-        result = result_item.data(Qt.ItemDataRole.UserRole)
-        if result:
-            self.go_to_error_in_viewer(row, result)
-
     def copy_selected_row(self):
         """Копировать выбранную строку результатов"""
         selected_rows = self.results_table.selectionModel().selectedRows()
@@ -2239,6 +2521,8 @@ class MainWindow(QMainWindow):
 
         from PyQt6.QtWidgets import QApplication
         QApplication.clipboard().setText('\t'.join(text_parts))
+
+    # ==================== МЕТОДЫ ЭКСПОРТА ====================
 
     def export_pdf(self):
         QMessageBox.information(self, "Экспорт", "Экспорт в PDF будет доступен в следующей версии")
@@ -2280,22 +2564,56 @@ class MainWindow(QMainWindow):
     def compare_versions(self):
         QMessageBox.information(self, "Сравнение", "Сравнение версий будет доступно в следующей версии")
 
-    def open_config_editor(self):
-        """Открытие редактора конфигурации"""
-        self.editor = ConfigEditor(self)
-        self.editor.exec()
+    # ==================== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ====================
 
-    def open_settings(self):
-        """Открыть диалог настроек"""
-        dialog = SettingsDialog(self)
-        if dialog.exec():
-            for check_group in self.checker.config.get('checks', []):
-                for subcheck in check_group.get('subchecks', []):
-                    if subcheck.get('type', '').startswith('fuzzy'):
-                        subcheck['threshold'] = self.fuzzy_threshold
-                        subcheck['trust_threshold'] = self.fuzzy_trust_threshold
+    def show_critical_issue(self, issue):
+        """Показать предупреждение о критической проблеме"""
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle("Обнаружена критическая проблема")
+        msg_box.setText(
+            f"<b>Обнаружена критическая проблема</b><br><br>"
+            f"<b>Проверка:</b> {issue.get('name', 'Неизвестно')}<br>"
+            f"<b>Результат:</b> {issue.get('message', '')}<br><br>"
+            f"<b>Местоположение:</b> Таблица 901: \"Local Area Network – активные коммутаторы\"<br>"
+            f"<b>Наименование:</b> Cisco Catalyst 2960-X<br>"
+            f"<b>Требования:</b> Использовать оборудование из реестра российского ПО"
+        )
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg_box.exec()
 
-            QMessageBox.information(self, "Настройки", "Настройки применены")
+    def convert_old_config(self):
+        """Конвертировать старый YAML конфиг в новую базу данных"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Выберите старый конфиг YAML", "", "YAML files (*.yaml *.yml);;All files (*.*)"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            # Создаем резервную копию текущей БД
+            backup_path = self.db.create_backup('before_conversion')
+
+            # Импортируем с объединением
+            added, updated, skipped, details = self.db.import_checks_from_yaml(file_path, auto_merge=True)
+
+            # Обновляем конфиг проверяльщика
+            self.update_checker_config()
+
+            # Показываем результат
+            msg = f"Конвертация завершена!\n\n"
+            msg += f"✅ Добавлено новых проверок: {added}\n"
+            msg += f"🔄 Обновлено существующих: {updated}\n"
+            msg += f"⏭️ Пропущено дубликатов: {skipped}\n\n"
+
+            if backup_path:
+                msg += f"Резервная копия создана: {backup_path}"
+
+            QMessageBox.information(self, "Результат конвертации", msg)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось конвертировать конфиг:\n{str(e)}")
 
     def show_about(self):
         """Показать информацию о программе"""
@@ -2312,3 +2630,27 @@ class MainWindow(QMainWindow):
             "<hr>"
             "<p><i>Все данные обрабатываются в защищённом контуре</i></p>"
         )
+
+    def closeEvent(self, event):
+        """Обработка закрытия приложения с автосохранением"""
+        # Спрашиваем пользователя о сохранении
+        if self.document_text:
+            reply = QMessageBox.question(
+                self, "Автосохранение",
+                "Сохранить текущий документ в истории перед закрытием?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
+            )
+
+            if reply == QMessageBox.StandardButton.Yes:
+                # Сохраняем с комментарием о закрытии
+                self.save_to_history(auto_save=True)
+                QMessageBox.information(self, "Сохранено", "Документ сохранен в истории")
+                event.accept()
+            elif reply == QMessageBox.StandardButton.No:
+                # Закрываем без сохранения
+                event.accept()
+            else:
+                # Отмена закрытия
+                event.ignore()
+        else:
+            event.accept()

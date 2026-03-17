@@ -164,6 +164,8 @@ a = Analysis(
         'versions_dialog',
         'json_database',
         'excel_parser',
+        'document_history',
+        'document_history_dialog',
 
         # pandas и зависимости
         'pandas',
